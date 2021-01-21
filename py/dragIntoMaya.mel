@@ -1,0 +1,12 @@
+global proc dragIntoMaya()
+{    
+    string $whatIs = `whatIs dragIntoMaya`;
+    string $fullpath = `substitute "Mel procedure found in: " $whatIs ""`;
+    string $folderpath = `substitute "dragIntoMaya.mel" $fullpath ""`;
+    print ($folderpath + "\n");
+    string $exec_cmd = "execfile(\"" + $folderpath + "\easyInstall.py\")";
+    print ($exec_cmd + "\n");
+    python($exec_cmd);
+}
+
+dragIntoMaya();
