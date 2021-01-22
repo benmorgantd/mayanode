@@ -19,6 +19,11 @@ DISPLAY_COLORS = {'black': 1, 'grey': 3, 'blue': 6, 'pink': 9, 'red': 13, 'lime'
 SPACES = {'world': om.MSpace.kWorld, 'object': om.MSpace.kObject, 'local': om.MSpace.kTransform}
 
 NULL_OBJECT = om.MObject.kNullObj
+DG_MODIFIER = om.MDGModifier()
+DAG_MODIFIER = om.MDagModifier()
+
+DAG_NODE_TYPES = ['transform', 'mesh', 'locator']
+INVALID_NODE_TYPES = ['shape', 'curve']
 
 
 class Scene(object):
@@ -109,6 +114,20 @@ class Scene(object):
 
         return selectionTypes
 
+    @classmethod
+    def createNode(cls, nodeType, nodeName):
+        if nodeType in DAG_NODE_TYPES:
+            _modifier = DAG_MODIFIER
+        else:
+            _modifier = DG_MODIFIER
+
+        _nodeMObject = _modifier.createNode(nodeType)
+        _modifier.renameNode(_nodeMObject, nodeName)
+        _modifier.doIt()
+
+    @classmethod
+    def setAttr(cls, attribute, value):
+        return
 
 class DependencyNode(object):
     @classmethod
@@ -138,9 +157,8 @@ class DependencyNode(object):
         _sourceFnAttr.setWritable(True)
         _destFnAttr.setWritable(True)
 
-        _dgMod = om.MDGModifier()
-        _dgMod.connect(sourcePlug, destPlug)
-        _dgMod.doIt()
+        DG_MODIFIER.connect(sourcePlug, destPlug)
+        DG_MODIFIER.doIt()
 
     def __init__(self, seed):
         self._initialized = False
@@ -342,6 +360,9 @@ class DagNode(DependencyNode):
     def __init__(self, seed):
         super(DagNode, self).__init__(seed)
 
+        if not self.mObject.hasFn(om.MFn.kDagNode):
+            raise ValueError('\'{0}\' is not a subclass of DagNode.'.format(self.fnDependencyNode.name()))
+
         self._initialized = False
 
         _sel = om.MSelectionList()
@@ -368,18 +389,6 @@ class DagNode(DependencyNode):
 
     def __radd__(self, other):
         return other + self.dagPath.fullPathName()
-
-    # @property
-    # def fnDependencyNode(self):
-    #     try:
-    #         _fnDependencyNode = om.MFnDependencyNode(self.mObject)
-    #         return _fnDependencyNode
-    #     except RuntimeError:
-    #         raise RuntimeError('Given object type is not compatible')
-
-    # @property
-    # def fnDagNode(self):
-    #     return om.MFnDagNode(self.dagPath)
 
     @property
     def name(self):
@@ -549,12 +558,13 @@ class DagNode(DependencyNode):
             # Don't modify the node's existing dag path object
             _dag = om.MDagPath(self.dagPath)
             # Only supports 1 shape
-            _dag.extendToShape(0)
+            _dag = _dag.extendToShape(0)
             # check what the shape's type is
             _shapeMObj = _dag.node()
             if _shapeMObj.hasFn(om.MFn.kMesh):
                 _mesh = Mesh(_shapeMObj)
                 if not _mesh.fnDagNode.isIntermediateObject:
+                    #TODO there are loops happening here that shouldn't be happening
                     return _mesh
             elif _shapeMObj.hasFn(om.MFn.kNurbsCurve):
                 _curve = Curve(_shapeMObj)
@@ -675,6 +685,9 @@ class Shape(DagNode):
     def __init__(self, seed):
         super(Shape, self).__init__(seed)
 
+        if not self.mObject.hasFn(om.MFn.kShape):
+            raise ValueError('\'{0}\' is not a subclass of Shape.'.format(self.fnDependencyNode.name()))
+
     @property
     def transform(self):
         # return this shape's transform
@@ -685,6 +698,9 @@ class Shape(DagNode):
 class Mesh(Shape):
     def __init__(self, seed):
         super(Mesh, self).__init__(seed)
+
+        if not self.mObject.hasFn(om.MFn.kMesh):
+            raise ValueError('\'{0}\' is not a subclass of Mesh.'.format(self.fnDependencyNode.name()))
 
     @property
     def fnMesh(self):
@@ -737,9 +753,12 @@ class Mesh(Shape):
         return neighboringVertices
 
 
-class Curve(Shape):
+class Curve(DagNode):
     def __init__(self, seed):
         super(Curve, self).__init__(seed)
+
+        if not self.shape.mObject.hasFn(om.MFn.kNurbsCurve):
+            raise ValueError('\'{0}\' is not a subclass of Curve.'.format(self.fnDependencyNode.name()))
 
     @property
     def fnNurbsCurve(self):
@@ -788,6 +807,7 @@ class Curve(Shape):
 
     @classmethod
     def fitCurveToPoints(cls, points, name='fitCurve'):
+        # TODO: do this with MDGModifier
         linearCurve = cmds.curve(degree=1, point=points)
         fitCurve = cmds.fitBspline(linearCurve, constructionHistory=False, tolerance=0.001, name=name)[0]
         cmds.delete(linearCurve)
@@ -795,32 +815,37 @@ class Curve(Shape):
         return Curve(fitCurve)
 
 
-class LinearCurve(Curve):
-    def __init__(self, seed=None, points=[], forceCvCount=False):
-        if seed:
-            super(LinearCurve, self).__init__(seed)
+class LinearCurve(DagNode):
+    def __init__(self, seed):
+        super(LinearCurve, self).__init__(seed)
+
+        if not self.shape.mObject.hasFn(om.MFn.kNurbsCurve):
+            raise ValueError('\'{0}\' is not a subclass of Curve.'.format(self.fnDependencyNode.name()))
+
+    @classmethod
+    def create(cls, points=[], forceCvCount=False):
+        om.MGlobal.clearSelectionList()
+        _points = om.MPointArray()
+        _knots = om.MDoubleArray()
+
+        if not isinstance(points, om.MPointArray):
+            for i in xrange(len(points)):
+                _points.append(om.MPoint(*points[i]))
+                _knots.append(i)
+
+            if forceCvCount:
+                # Force the cv count to be the same on rig control curves so their shape can be easily changed
+                _lastPoint = _points[len(_points) - 1]
+                for j in range(len(points), forceCvCount):
+                    # make all the remaining CVs equal to the same as the last point
+                    _points.append(om.MPoint(_lastPoint))
+                    _knots.append(j)
         else:
-            om.MGlobal.clearSelectionList()
-            _points = om.MPointArray()
-            _knots = om.MDoubleArray()
+            _points = points
 
-            if not isinstance(points, om.MPointArray):
-                for i in xrange(len(points)):
-                    _points.append(om.MPoint(*points[i]))
-                    _knots.append(i)
+        _newCurveMObj = om.MFnNurbsCurve().create(_points, _knots, 1, om.MFnNurbsCurve.kOpen, False, False)
 
-                if forceCvCount:
-                    # Force the cv count to be the same on rig control curves so their shape can be easily changed
-                    _lastPoint = _points[len(_points) - 1]
-                    for j in range(len(points), forceCvCount):
-                        # make all the remaining CVs equal to the same as the last point
-                        _points.append(om.MPoint(_lastPoint))
-                        _knots.append(j)
-            else:
-                _points = points
-
-            _newCurveMObj = om.MFnNurbsCurve().create(_points, _knots, 1, om.MFnNurbsCurve.kOpen, False, False)
-            super(LinearCurve, self).__init__(_newCurveMObj)
+        return _newCurveMObj
 
     def attachBorderCVsToTransform(self, startTransform, endTransform):
         if not len(self.getPoints()) == 0:
@@ -847,6 +872,13 @@ class LinearCurve(Curve):
 
 
 class SkinCluster(DependencyNode):
+    def __init__(self, seed):
+        super(SkinCluster, self).__init__(seed)
+
+        if not self.mObject.hasFn(om.MFn.kSkinClusterFilter):
+            raise ValueError('\'{0}\' is not a SkinCluster type object..'.format(self.fnDependencyNode.name()))
+
+
     @classmethod
     def pruneVertexWeightList(cls, weights, influenceCount, maxInfluence=4, normalize=True):
         """Prunes the given list to have only four non-zero values"""
@@ -869,9 +901,6 @@ class SkinCluster(DependencyNode):
             prunedWeights = [value / prunedWeightsSum for value in prunedWeights]
 
         return prunedWeights
-
-    def __init__(self, seed):
-        super(SkinCluster, self).__init__(seed)
 
     @property
     def fnSkinCluster(self):
@@ -1029,9 +1058,6 @@ class SkinCluster(DependencyNode):
             itVerts = om.MItMeshVertex(meshTransform.dagPath, selectedComponents)
             numInfluences = self.influenceCount
 
-            fnComponent = om.MFnSingleIndexedComponent(selectedComponents)
-            numSelectedComponents = len(fnComponent.getElements())
-
             while not itVerts.isDone():
                 neighborVerts = itVerts.getConnectedVertices()
                 neighborWeightSums = [0.0] * numInfluences
@@ -1043,8 +1069,6 @@ class SkinCluster(DependencyNode):
                     v = neighborVerts[i]
                     # get these vertex's weights and add them to our weight sums
                     for j in xrange(numInfluences):
-                        # neighborWeightSums[j] += oldWeights[(v * numInfluences) + j]
-                        # print((v * numInfluences) + j)
                         neighborWeightSums[j] += oldWeights[(v * numInfluences) + j]
 
                 smoothedWeight = [w / float(numNeighbors) for w in neighborWeightSums]
