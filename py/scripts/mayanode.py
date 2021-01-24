@@ -116,18 +116,27 @@ class Scene(object):
 
     @classmethod
     def createNode(cls, nodeType, nodeName):
-        if nodeType in DAG_NODE_TYPES:
-            _modifier = DAG_MODIFIER
-        else:
-            _modifier = DG_MODIFIER
+        _modifier = DG_MODIFIER
 
-        _nodeMObject = _modifier.createNode(nodeType)
+        try:
+            _nodeMObject = _modifier.createNode(nodeType)
+        except TypeError:
+            # Could be a DAG node type, or an unknown node type
+            try:
+                _modifier = DAG_MODIFIER
+                _nodeMObject = _modifier.createNode(nodeType)
+            except:
+                raise
+
         _modifier.renameNode(_nodeMObject, nodeName)
         _modifier.doIt()
 
+        return _nodeMObject
+
     @classmethod
     def setAttr(cls, attribute, value):
-        return
+        raise NotImplementedError()
+
 
 class DependencyNode(object):
     @classmethod
@@ -151,14 +160,18 @@ class DependencyNode(object):
         _sourceFnAttr = om.MFnAttribute(sourcePlug.attribute())
         _destFnAttr = om.MFnAttribute(destPlug.attribute())
 
-        if not _sourceFnAttr.isConnectable() or not _destFnAttr.isConnectable():
+        if not _sourceFnAttr.connectable or not _destFnAttr.connectable:
             raise ValueError('A given plug is not connectable.')
+        elif not _destFnAttr.writable:
+            raise ValueError('The destination plug is not writable.')
 
-        _sourceFnAttr.setWritable(True)
-        _destFnAttr.setWritable(True)
+        DAG_MODIFIER.connect(sourcePlug, destPlug)
+        DAG_MODIFIER.doIt()
 
-        DG_MODIFIER.connect(sourcePlug, destPlug)
-        DG_MODIFIER.doIt()
+    @classmethod
+    def disconnect(cls, sourcePlug, destPlug):
+        DAG_MODIFIER.disconnect(sourcePlug, destPlug)
+        DAG_MODIFIER.doIt()
 
     def __init__(self, seed):
         self._initialized = False
@@ -232,7 +245,7 @@ class DependencyNode(object):
                 typedAttrType = fnTypedAttr.attrType()
                 if typedAttrType == 5:
                     # kMatrix type. Get matrix data without the MFnTransform
-                    if plug.array:
+                    if plug.isArray:
                         # worldMatrix, worldInverseMatrix, parentMatrix, parentInverseMatrix
                         _childPlug = plug.elementByLogicalIndex(0)
                         fnMatrixData = om.MFnMatrixData(_childPlug.asMObject())
@@ -360,8 +373,8 @@ class DagNode(DependencyNode):
     def __init__(self, seed):
         super(DagNode, self).__init__(seed)
 
-        if not self.mObject.hasFn(om.MFn.kDagNode):
-            raise ValueError('\'{0}\' is not a subclass of DagNode.'.format(self.fnDependencyNode.name()))
+        # if not self.mObject.hasFn(om.MFn.kDagNode):
+        #     raise ValueError('\'{0}\' is not a subclass of DagNode.'.format(self.fnDependencyNode.name()))
 
         self._initialized = False
 
@@ -685,8 +698,8 @@ class Shape(DagNode):
     def __init__(self, seed):
         super(Shape, self).__init__(seed)
 
-        if not self.mObject.hasFn(om.MFn.kShape):
-            raise ValueError('\'{0}\' is not a subclass of Shape.'.format(self.fnDependencyNode.name()))
+        # if not self.mObject.hasFn(om.MFn.kShape):
+        #     raise ValueError('\'{0}\' is not a subclass of Shape.'.format(self.fnDependencyNode.name()))
 
     @property
     def transform(self):
@@ -699,39 +712,11 @@ class Mesh(Shape):
     def __init__(self, seed):
         super(Mesh, self).__init__(seed)
 
-        if not self.mObject.hasFn(om.MFn.kMesh):
-            raise ValueError('\'{0}\' is not a subclass of Mesh.'.format(self.fnDependencyNode.name()))
-
-    @property
-    def fnMesh(self):
-        try:
-            _fnMesh = om.MFnMesh(self.mObject)
-            return _fnMesh
-        except RuntimeError:
-            raise RuntimeError('Given object type is not compatible. Is the object a polygonal mesh?')
-
-    def getSkinCluster(self):
-
-        itDG = om.MItDependencyGraph(self.mObject, om.MFn.kSkinClusterFilter, om.MItDependencyGraph.kUpstream,
-                                     om.MItDependencyGraph.kDepthFirst, om.MItDependencyGraph.kNodeLevel)
-
-        if itDG.isDone():
-            # No skin cluster. Are you sure you passed a mesh?
-            return None
-
-        skinClusterMObjArray = om.MObjectArray()
-
-        while not itDG.isDone():
-            currentNode = itDG.currentNode()
-            skinClusterMObjArray.append(currentNode)
-
-            itDG.next()
-
-        # Return the first item in the array
-        return SkinCluster(skinClusterMObjArray[0])
+        # if not self.mObject.hasFn(om.MFn.kMesh):
+        #     raise ValueError('\'{0}\' is not a subclass of Mesh.'.format(self.fnDependencyNode.name()))
 
     @classmethod
-    def getVertexNeighbors(self, dag, components):
+    def getVertexNeighbors(cls, dag, components):
         # also returns itself
 
         itVerts = om.MItMeshVertex(dag, components)
@@ -752,13 +737,170 @@ class Mesh(Shape):
 
         return neighboringVertices
 
+    @classmethod
+    def createFromObjFile(cls, filePath, transformationMatrix=None):
+        '''Very simple obj reader for fun'''
+
+        with open(filePath, 'r') as f:
+            data = f.readlines()
+
+        floatMatrix = None
+
+        if transformationMatrix:
+            transformationMatrix = om.MMatrix(transformationMatrix)
+            floatMatrix = om.MFloatMatrix(transformationMatrix)
+
+        vertices = []
+        polygonCounts = []
+        polygonConnects = []
+        uValues = []
+        vValues = []
+        normals = om.MFloatVectorArray()
+        faceIds = []
+        vertexIds = []
+        faceVertexNormalIndices = []
+        uvCounts = []
+        uvIds = []
+        name = 'polyMesh1'
+
+        faceId = 0
+
+        for line in data:
+            line = line.strip('\n')
+            if line.startswith('v '):
+                # Vertex coordinate
+                _point = om.MPoint(*[float(p) for p in line.split(' ')[1:]])
+                if transformationMatrix:
+                    _point = _point * transformationMatrix
+                vertices.append(_point)
+            elif line.startswith('vt '):
+                # vertex UV coordinate
+                _uv = [float(f) for f in line.split(' ')[1:]]
+                uValues.append(_uv[0])
+                vValues.append(_uv[1])
+            elif line.startswith('vn '):
+                # vertex normal vector
+                _normal = om.MFloatVector(*[float(n) for n in line.split(' ')[1:]])
+                if floatMatrix:
+                    _normal = _normal * floatMatrix
+                normals.append(_normal)
+            # elif line.startswith('g ')
+            # TODO: find out how objects get separated, and how to correspond the name of the mesh to its data.
+            elif line.startswith('f '):
+                # polygon connection information
+                # Only accepting the format "v/vt/vn"
+                # vertex id, vertex uv index, vertex normal index
+                _faceVertexData = line.split(' ')[1:]
+                numVertsInFace = len(_faceVertexData)
+                polygonCounts.append(len(_faceVertexData))
+                for faceData in [item.split('/') for item in _faceVertexData]:
+                    # !! OBJ vertex indices start at 1 !!
+                    vertId = int(faceData[0]) - 1
+                    polygonConnects.append(vertId)
+                    faceIds.append(faceId)
+                    vertexIds.append(vertId)
+                    faceVertexNormalIndices.append(int(faceData[2]) - 1)
+                    # TODO: this might fail if there are no UVs
+                    uvIds.append(int(faceData[1]) - 1)
+
+                uvCounts.append(numVertsInFace)
+
+                faceId += 1
+
+        fnMesh = om.MFnMesh()
+        meshMObject = fnMesh.create(vertices, polygonCounts, polygonConnects)
+
+        fnMesh.setUVs(uValues, vValues)
+        fnMesh.assignUVs(uvCounts, uvIds)
+
+        if len(normals) == len(vertices):
+            # smooth shaded
+            fnMesh.setNormals(normals)
+        elif len(normals) == sum(polygonCounts):
+            # hard shaded
+            fnMesh.setFaceVertexNormals(normals, faceIds, vertexIds)
+        else:
+            # combination hard and soft shaded
+            raise NotImplementedError('OBJ meshes with mixed smooth and hard edges are currently not supported.')
+
+        # fnMesh.updateSurface()
+        DG_MODIFIER.renameNode(meshMObject, name)
+        DG_MODIFIER.doIt()
+
+        return meshMObject
+
+    @property
+    def fnMesh(self):
+        try:
+            _fnMesh = om.MFnMesh(self.mObject)
+            return _fnMesh
+        except RuntimeError:
+            raise RuntimeError('Given object type is not compatible. Is the object a polygonal mesh?')
+
+    def getSkinCluster(self):
+        itDG = om.MItDependencyGraph(self.mObject, om.MFn.kSkinClusterFilter, om.MItDependencyGraph.kUpstream,
+                                     om.MItDependencyGraph.kDepthFirst, om.MItDependencyGraph.kNodeLevel)
+
+        if itDG.isDone():
+            # No skin cluster. Are you sure you passed a mesh?
+            return None
+
+        skinClusterMObjArray = om.MObjectArray()
+
+        while not itDG.isDone():
+            currentNode = itDG.currentNode()
+            skinClusterMObjArray.append(currentNode)
+
+            itDG.next()
+
+        # Return the first item in the array
+        return SkinCluster(skinClusterMObjArray[0])
+
+    def assignMaterial(self, material):
+        # TODO: create a Material node type
+        instObjectGroupsPlug = self.shape.findPlug('instObjGroups')
+        instObjectGroupsPlug = instObjectGroupsPlug.elementByLogicalIndex(0)
+        if instObjectGroupsPlug.isConnected:
+            # Destinations skips over unit conversion nodes. Neat
+            connectedPlugs = instObjectGroupsPlug.destinations()
+            for plug in connectedPlugs:
+                shaderGroup = plug.node()
+                shaderGroupSet = om.MFnSet(shaderGroup)
+                if shaderGroupSet.isMember(self.shape.mObject):
+                    shaderGroupSet.removeMember(self.shape.mObject)
+
+        material = DependencyNode(material)
+        connectedPlugs = material.findPlug('outColor').destinations()
+        shaderGroupMObject = None
+
+        for plug in connectedPlugs:
+            node = plug.node()
+            if node.apiType() == om.MFn.kShadingEngine:
+                shaderGroupMObject = node
+                break
+
+        if not shaderGroupMObject:
+            raise RuntimeWarning('The given shader is not connected to a shader group node.')
+
+        initialShadingGroupSet = om.MFnSet(shaderGroupMObject)
+        initialShadingGroupSet.addMember(self.shape.mObject)
+
 
 class Curve(DagNode):
     def __init__(self, seed):
         super(Curve, self).__init__(seed)
 
-        if not self.shape.mObject.hasFn(om.MFn.kNurbsCurve):
-            raise ValueError('\'{0}\' is not a subclass of Curve.'.format(self.fnDependencyNode.name()))
+        # if not self.mObject.hasFn(om.MFn.kNurbsCurve):
+        #     raise ValueError('\'{0}\' is not a subclass of Curve.'.format(self.fnDependencyNode.name()))
+
+    @classmethod
+    def fitCurveToPoints(cls, points, name='fitCurve'):
+        # TODO: do this with MDGModifier
+        linearCurve = LinearCurve(LinearCurve.create(points=points))
+        fitCurve = cmds.fitBspline(linearCurve, constructionHistory=False, tolerance=0.001, name=name)[0]
+        cmds.delete(linearCurve)
+
+        return Curve(fitCurve)
 
     @property
     def fnNurbsCurve(self):
@@ -805,22 +947,13 @@ class Curve(DagNode):
         center = sceneBoundingBox.center()
         cmds.xform(self.shape + '.cv[0:]', translation=(center.x, center.y, center.z), relative=True)
 
-    @classmethod
-    def fitCurveToPoints(cls, points, name='fitCurve'):
-        # TODO: do this with MDGModifier
-        linearCurve = cmds.curve(degree=1, point=points)
-        fitCurve = cmds.fitBspline(linearCurve, constructionHistory=False, tolerance=0.001, name=name)[0]
-        cmds.delete(linearCurve)
-
-        return Curve(fitCurve)
-
 
 class LinearCurve(DagNode):
     def __init__(self, seed):
         super(LinearCurve, self).__init__(seed)
 
-        if not self.shape.mObject.hasFn(om.MFn.kNurbsCurve):
-            raise ValueError('\'{0}\' is not a subclass of Curve.'.format(self.fnDependencyNode.name()))
+        # if not self.shape.mObject.hasFn(om.MFn.kNurbsCurve):
+        #     raise ValueError('\'{0}\' is not a subclass of Curve.'.format(self.fnDependencyNode.name()))
 
     @classmethod
     def create(cls, points=[], forceCvCount=False):
@@ -877,7 +1010,6 @@ class SkinCluster(DependencyNode):
 
         if not self.mObject.hasFn(om.MFn.kSkinClusterFilter):
             raise ValueError('\'{0}\' is not a SkinCluster type object..'.format(self.fnDependencyNode.name()))
-
 
     @classmethod
     def pruneVertexWeightList(cls, weights, influenceCount, maxInfluence=4, normalize=True):
