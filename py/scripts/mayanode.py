@@ -1270,6 +1270,8 @@ class ShaderGroup(DependencyNode):
     def __init__(self, seed):
         super(ShaderGroup, self).__init__(seed)
 
+        self.fnSet = om.MFnSet(self.mObject)
+
     @property
     def material(self):
         surfaceShaderPlug = self.findPlug('surfaceShader')
@@ -1309,10 +1311,8 @@ class Material(DependencyNode):
 
     def getConnectedShapes(self):
         # get the members of the shader group. Polygonal members will return the shape
-        shaderGroupSet = om.MFnSet(self.shaderGroup)
-
         # return a flattened list of the shader group set's members
-        memberList = shaderGroupSet.getMembers(True)
+        memberList = self.shaderGroup.fnSet.getMembers(True)
         shapes = []
 
         itSel = om.MItSelectionList(memberList)
