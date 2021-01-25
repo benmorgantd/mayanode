@@ -28,6 +28,22 @@ INVALID_NODE_TYPES = ['shape', 'curve']
 
 class Scene(object):
     @classmethod
+    def stringToMObject(cls, sourceString):
+        _mObject = None
+        if isinstance(sourceString, basestring):
+            try:
+                # we only want to deal in objects that have unique names
+                _sel = om.MSelectionList()
+                _sel.add(sourceString)
+                _mObject = _sel.getDependNode(0)
+            except RuntimeError:
+                raise RuntimeError('Object {0} does not exist or is not unique.'.format(sourceString))
+        else:
+            return None
+
+        return _mObject
+
+    @classmethod
     def getBoundingBox(cls):
         """Returns the bounding box around the DAGs in the scene"""
 
@@ -353,6 +369,7 @@ class DependencyNode(object):
     @name.setter
     def name(self, value):
         self.fnDependencyNode.setName(value)
+
 
     '''
     @property
@@ -744,11 +761,11 @@ class Mesh(Shape):
         with open(filePath, 'r') as f:
             data = f.readlines()
 
-        floatMatrix = None
+        # floatMatrix = None
 
         if transformationMatrix:
             transformationMatrix = om.MMatrix(transformationMatrix)
-            floatMatrix = om.MFloatMatrix(transformationMatrix)
+            # floatMatrix = om.MFloatMatrix(transformationMatrix)
 
         vertices = []
         polygonCounts = []
@@ -762,6 +779,7 @@ class Mesh(Shape):
         uvCounts = []
         uvIds = []
         name = 'polyMesh1'
+        missingUVs = False
 
         faceId = 0
 
@@ -780,28 +798,34 @@ class Mesh(Shape):
                 vValues.append(_uv[1])
             elif line.startswith('vn '):
                 # vertex normal vector
-                _normal = om.MFloatVector(*[float(n) for n in line.split(' ')[1:]])
-                if floatMatrix:
-                    _normal = _normal * floatMatrix
+                # _normal = om.MFloatVector(*[float(n) for n in line.split(' ')[1:]])
+                # if floatMatrix:
+                #     _normal = _normal * floatMatrix
+                _normal = om.MVector(*[float(n) for n in line.split(' ')[1:]])
+                if transformationMatrix:
+                    _normal = _normal * transformationMatrix
                 normals.append(_normal)
-            # elif line.startswith('g ')
-            # TODO: find out how objects get separated, and how to correspond the name of the mesh to its data.
+            elif line.startswith('g '):
+                name = line.split(' ')[1]
             elif line.startswith('f '):
-                # polygon connection information
-                # Only accepting the format "v/vt/vn"
+                # Polygon connection information
+                # Expecting the format "v/vt/vn"
                 # vertex id, vertex uv index, vertex normal index
                 _faceVertexData = line.split(' ')[1:]
                 numVertsInFace = len(_faceVertexData)
                 polygonCounts.append(len(_faceVertexData))
                 for faceData in [item.split('/') for item in _faceVertexData]:
-                    # !! OBJ vertex indices start at 1 !!
+                    # OBJ vertex indices start at 1
                     vertId = int(faceData[0]) - 1
                     polygonConnects.append(vertId)
                     faceIds.append(faceId)
                     vertexIds.append(vertId)
                     faceVertexNormalIndices.append(int(faceData[2]) - 1)
-                    # TODO: this might fail if there are no UVs
-                    uvIds.append(int(faceData[1]) - 1)
+
+                    if faceData[1] and not missingUVs:
+                        uvIds.append(int(faceData[1]) - 1)
+                    else:
+                        missingUVs = True
 
                 uvCounts.append(numVertsInFace)
 
@@ -810,20 +834,35 @@ class Mesh(Shape):
         fnMesh = om.MFnMesh()
         meshMObject = fnMesh.create(vertices, polygonCounts, polygonConnects)
 
-        fnMesh.setUVs(uValues, vValues)
-        fnMesh.assignUVs(uvCounts, uvIds)
+        if not missingUVs:
+            fnMesh.setUVs(uValues, vValues)
+            fnMesh.assignUVs(uvCounts, uvIds)
 
-        if len(normals) == len(vertices):
-            # smooth shaded
-            fnMesh.setNormals(normals)
-        elif len(normals) == sum(polygonCounts):
-            # hard shaded
+        print(normals)
+        print(len(normals))
+        print(faceIds)
+        print(len(faceIds))
+        print(vertexIds)
+        print(len(vertexIds))
+        print(len(vertices))
+        print(sum(polygonCounts))
+
+        if len(normals) == sum(polygonCounts):
+            # completely hard shaded
             fnMesh.setFaceVertexNormals(normals, faceIds, vertexIds)
+        elif len(normals) == len(vertices):
+            # completely smooth shaded
+            fnMesh.setNormals(normals)
         else:
-            # combination hard and soft shaded
-            raise NotImplementedError('OBJ meshes with mixed smooth and hard edges are currently not supported.')
+            # We'll have to do more work if the object has a mixture of smooth and hard shaded edges
+            faceVertexNormals = []
+            for i in xrange(len(faceIds)):
+                faceVertexNormals.append(normals[vertexIds[i]])
 
-        # fnMesh.updateSurface()
+            print(faceVertexNormals)
+
+            fnMesh.setFaceVertexNormals(faceVertexNormals, faceIds, vertexIds)
+
         DG_MODIFIER.renameNode(meshMObject, name)
         DG_MODIFIER.doIt()
 
@@ -856,6 +895,24 @@ class Mesh(Shape):
         # Return the first item in the array
         return SkinCluster(skinClusterMObjArray[0])
 
+    def getShaders(self):
+        '''Returns the per-polygon shader assignment for this instance of the mesh'''
+
+        shaderGroupMObjects, polygonToShaderMapping = self.shape.fnMesh.getConnectedShaders(0)
+
+        shaderGroups = []
+        shaders = []
+
+        for shaderMObject in shaderGroupMObjects:
+            if shaderMObject.apiType() == om.MFn.kShadingEngine:
+                shaderGroup = ShaderGroup(shaderMObject)
+                shaderGroups.append(shaderGroup)
+
+        for shaderGroup in shaderGroups:
+            shaders.append(shaderGroup.material)
+
+        return shaders, polygonToShaderMapping
+
     def assignMaterial(self, material):
         # TODO: create a Material node type
         instObjectGroupsPlug = self.shape.findPlug('instObjGroups')
@@ -869,21 +926,14 @@ class Mesh(Shape):
                 if shaderGroupSet.isMember(self.shape.mObject):
                     shaderGroupSet.removeMember(self.shape.mObject)
 
-        material = DependencyNode(material)
-        connectedPlugs = material.findPlug('outColor').destinations()
-        shaderGroupMObject = None
-
-        for plug in connectedPlugs:
-            node = plug.node()
-            if node.apiType() == om.MFn.kShadingEngine:
-                shaderGroupMObject = node
-                break
+        material = Material(material)
+        shaderGroupMObject = material.shaderGroup
 
         if not shaderGroupMObject:
-            raise RuntimeWarning('The given shader is not connected to a shader group node.')
+            raise RuntimeError('The requested material {0} is not connected to a shader group.'.format(material))
 
-        initialShadingGroupSet = om.MFnSet(shaderGroupMObject)
-        initialShadingGroupSet.addMember(self.shape.mObject)
+        shadingGroupSet = om.MFnSet(shaderGroupMObject)
+        shadingGroupSet.addMember(self.shape.mObject)
 
 
 class Curve(DagNode):
@@ -1008,8 +1058,8 @@ class SkinCluster(DependencyNode):
     def __init__(self, seed):
         super(SkinCluster, self).__init__(seed)
 
-        if not self.mObject.hasFn(om.MFn.kSkinClusterFilter):
-            raise ValueError('\'{0}\' is not a SkinCluster type object..'.format(self.fnDependencyNode.name()))
+        # if not self.mObject.hasFn(om.MFn.kSkinClusterFilter):
+        #     raise ValueError('\'{0}\' is not a SkinCluster type object..'.format(self.fnDependencyNode.name()))
 
     @classmethod
     def pruneVertexWeightList(cls, weights, influenceCount, maxInfluence=4, normalize=True):
@@ -1214,3 +1264,82 @@ class SkinCluster(DependencyNode):
             self.setWeights(newWeights)
 
         om.MGlobal.setActiveSelectionList(originalSel)
+
+
+class ShaderGroup(DependencyNode):
+    def __init__(self, seed):
+        super(ShaderGroup, self).__init__(seed)
+
+    @property
+    def material(self):
+        surfaceShaderPlug = self.findPlug('surfaceShader')
+        inputPlug = surfaceShaderPlug.source()
+        # TODO: do type check
+        return Material(inputPlug.node())
+
+
+class Material(DependencyNode):
+    def __init__(self, seed):
+        super(Material, self).__init__(seed)
+
+    @property
+    def shaderGroup(self):
+        '''Returns the MObject of the material's shader group'''
+
+        connectedPlugs = self.findPlug('outColor').destinations()
+        shaderGroupMObject = None
+
+        for plug in connectedPlugs:
+            node = plug.node()
+            if node.apiType() == om.MFn.kShadingEngine:
+                # A material can only belong to one shader group, so we can break as soon as we find one.
+                shaderGroupMObject = node
+                break
+
+        return ShaderGroup(shaderGroupMObject)
+
+    @property
+    def isArnoldMaterial(self):
+        result = False
+        pluginName = self.fnDependencyNode.pluginName
+        if pluginName and pluginName.endswith('mtoa.mll'):
+            result = True
+
+        return result
+
+    def getConnectedShapes(self):
+        # get the members of the shader group. Polygonal members will return the shape
+        shaderGroupSet = om.MFnSet(self.shaderGroup)
+
+        # return a flattened list of the shader group set's members
+        memberList = shaderGroupSet.getMembers(True)
+        shapes = []
+
+        itSel = om.MItSelectionList(memberList)
+
+        while not itSel.isDone():
+            shapes.append(Shape(itSel.getDependNode()))
+            itSel.next()
+
+        return shapes
+
+    def getDiffuseColorTexture(self):
+        raise NotImplementedError()
+
+    def getSpecularTexture(self):
+        raise NotImplementedError()
+
+    def getAlphaTexure(self):
+        raise NotImplementedError()
+
+    def getNormalTexture(self):
+        raise NotImplementedError()
+
+    def getRoughnessTexture(self):
+        raise NotImplementedError()
+
+    def getMetalnessTexture(self):
+        raise NotImplementedError()
+
+
+
