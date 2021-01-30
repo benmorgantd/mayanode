@@ -1,6 +1,7 @@
 import sys
 import inspect
 import json
+import os
 
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
@@ -24,6 +25,11 @@ DAG_MODIFIER = om.MDagModifier()
 
 DAG_NODE_TYPES = ['transform', 'mesh', 'locator']
 INVALID_NODE_TYPES = ['shape', 'curve']
+
+PICK_MATRIX_PARTS = {'useTranslate', 'useRotate', 'useScale', 'useShear'}
+CONSTRAINT_TYPE_USAGES = {'parent': {}, 'point': {'useRotate': False, 'useScale': False, 'useShear': False},
+                          'orient': {'useTranslate': False, 'useScale': False, 'useShear': False},
+                          'scale': {'useTranslate': False, 'useRotate': False}}
 
 
 class Scene(object):
@@ -153,6 +159,10 @@ class Scene(object):
     def setAttr(cls, attribute, value):
         raise NotImplementedError()
 
+    @classmethod
+    def mayaVersion(cls):
+        return om.MGlobal.mayaVersion()
+
 
 class DependencyNode(object):
     @classmethod
@@ -172,7 +182,7 @@ class DependencyNode(object):
         return _mObject
 
     @classmethod
-    def connect(cls, sourcePlug, destPlug):
+    def connect(cls, sourcePlug, destPlug, force=True):
         _sourceFnAttr = om.MFnAttribute(sourcePlug.attribute())
         _destFnAttr = om.MFnAttribute(destPlug.attribute())
 
@@ -181,13 +191,17 @@ class DependencyNode(object):
         elif not _destFnAttr.writable:
             raise ValueError('The destination plug is not writable.')
 
-        DAG_MODIFIER.connect(sourcePlug, destPlug)
-        DAG_MODIFIER.doIt()
+        existingDestPlugConnection = destPlug.source()
+        if force and not existingDestPlugConnection.isNull:
+            DG_MODIFIER.disconnect(existingDestPlugConnection, destPlug)
+
+        DG_MODIFIER.connect(sourcePlug, destPlug)
+        DG_MODIFIER.doIt()
 
     @classmethod
     def disconnect(cls, sourcePlug, destPlug):
-        DAG_MODIFIER.disconnect(sourcePlug, destPlug)
-        DAG_MODIFIER.doIt()
+        DG_MODIFIER.disconnect(sourcePlug, destPlug)
+        DG_MODIFIER.doIt()
 
     def __init__(self, seed):
         self._initialized = False
@@ -222,6 +236,14 @@ class DependencyNode(object):
         else:
             return False
 
+    @property
+    def name(self):
+        return self.fnDependencyNode.name()
+
+    @name.setter
+    def name(self, value):
+        self.fnDependencyNode.setName(value)
+
     def get(self, attribute):
         if hasattr(self, 'fnDependencyNode') and self.fnDependencyNode.hasAttribute(attribute):
             plug = self.findPlug(attribute)
@@ -246,6 +268,8 @@ class DependencyNode(object):
                     return plug.asLong()
                 elif unitType == 8:
                     return plug.asInt()
+                elif unitType == 11:
+                    return plug.asFloat()
                 elif unitType in [13, 14]:
                     return plug.asFloat()
                 else:
@@ -256,10 +280,18 @@ class DependencyNode(object):
                     _childPlug = plug.child(i)
                     _result.append(_childPlug.asDouble())
                 return _result
+            elif plugType == om.MFn.kAttribute3Float:
+                _result = []
+                for i in range(plug.numChildren()):
+                    _childPlug = plug.child(i)
+                    _result.append(_childPlug.asFloat())
+                return _result
             elif plugType == om.MFn.kTypedAttribute:
                 fnTypedAttr = om.MFnTypedAttribute(attributeMObj)
                 typedAttrType = fnTypedAttr.attrType()
-                if typedAttrType == 5:
+                if typedAttrType == 4:
+                  return plug.asString()
+                elif typedAttrType == 5:
                     # kMatrix type. Get matrix data without the MFnTransform
                     if plug.isArray:
                         # worldMatrix, worldInverseMatrix, parentMatrix, parentInverseMatrix
@@ -270,16 +302,18 @@ class DependencyNode(object):
                         # matrix, inverseMatrix, xformMatrix
                         _fnMatrixData = om.MFnMatrixData(plug.asMObject())
                         return _fnMatrixData.transformation()
+                else:
+                    print(typedAttrType)
 
-                raise AttributeError('getattr is currently not supported for this attribute type.')
+                raise AttributeError('getattr is currently not supported for attribute type {}.'.format(attributeMObj.apiTypeStr))
             elif plugType == om.MFn.kEnumAttribute:
                 return plug.asInt()
             elif plugType == om.MFn.kStringData:
                 return plug.asString()
             elif plugType == om.MFn.kMessageAttribute:
-                raise AttributeError('getattr is currently not supported for this attribute type.')
+                raise AttributeError('getattr is currently not supported for attribute type {}.'.format(attributeMObj.apiTypeStr))
             else:
-                raise AttributeError('getattr is currently not supported for this attribute type.')
+                raise AttributeError('getattr is currently not supported for attribute type {}.'.format(attributeMObj.apiTypeStr))
 
     def set(self, attribute, value):
         if hasattr(self, 'fnDependencyNode') and self.fnDependencyNode.hasAttribute(attribute):
@@ -298,7 +332,7 @@ class DependencyNode(object):
             elif plugType == om.MFn.kNumericAttribute:
                 # get data type
                 fnNumericAttr = om.MFnNumericAttribute(attributeMObj)
-                unitType = fnNumericAttr.unitType()
+                unitType = fnNumericAttr.numericType()
                 if unitType == 1:
                     plug.setBool(value)
                 elif unitType == 3:
@@ -356,34 +390,76 @@ class DependencyNode(object):
             else:
                 raise AttributeError('set() is currently not supported for this attribute type.')
 
-    def findPlug(self, plugString):
+    def findPlug(self, plugString, multiIndex=0):
         if self.fnDependencyNode.hasAttribute(plugString):
-            return self.fnDependencyNode.findPlug(plugString, False)
+            plug = self.fnDependencyNode.findPlug(plugString, False)
+            if plug.isArray:
+                _childPlug = plug.elementByLogicalIndex(0)
+                return _childPlug
+            else:
+                return plug
         else:
             raise AttributeError('Object {0} has no plug {1}'.format(self, plugString))
 
-    @property
-    def name(self):
-        return self.fnDependencyNode.name()
+    def getInputConnection(self, plugString):
+        plug = self.findPlug(plugString)
 
-    @name.setter
-    def name(self, value):
-        self.fnDependencyNode.setName(value)
+        if plug.isDestination:
+            return DependencyNode(plug.source().node())
+        else:
+            return None
 
+    def getFileTexturePath(self, attributeType):
+        textureFileNode = self.getInputConnection(attributeType)
+        if textureFileNode:
+            filePath = os.path.abspath(textureFileNode.get('fileTextureName'))
+            if filePath.endswith('Maya{}'.format(Scene.mayaVersion())):
+                return None
+            else:
+                return filePath
+        else:
+            return None
 
-    '''
-    @property
-    def attributes(self):
+    def isNodeUpstream(self, sourcePlug, nodeMObject):
+        itDG = om.MItDependencyGraph(self.mObject)
+        itDG.resetTo(sourcePlug, nodeMObject.apiType(), om.MItDependencyGraph.kUpstream,
+                     om.MItDependencyGraph.kDepthFirst, om.MItDependencyGraph.kNodeLevel)
 
-        _attributes = []
-        for i in xrange(self.fnDependencyNode.attributeCount()):
-            attributeMObject = self.fnDependencyNode.attribute(i)
-            plug = self.findPlug(attributeMObject)
-            # These args return us the long name of the attribute without the node
-            _attributes.append(plug.partialName(False, False, False, False, False, True))
+        if itDG.isDone():
+            # No nodes upstream of that plug of the given type
+            return False
+        while not itDG.isDone():
+            if itDG.currentNode() == nodeMObject:
+                return True
 
-        return _attributes
-    '''
+            itDG.next()
+
+    def findUpstreamNodesOfType(self, nodeType, sourcePlug=None):
+        itDG = om.MItDependencyGraph(self.mObject)
+        if sourcePlug:
+            itDG.resetTo(sourcePlug, nodeType, om.MItDependencyGraph.kUpstream, om.MItDependencyGraph.kDepthFirst,
+                         om.MItDependencyGraph.kNodeLevel)
+        else:
+            itDG.resetTo(self.mObject, nodeType, om.MItDependencyGraph.kUpstream, om.MItDependencyGraph.kDepthFirst,
+                         om.MItDependencyGraph.kNodeLevel)
+
+        if itDG.isDone():
+            # No nodes upstream of that plug of the given type
+            return None
+
+        nodeMObjects = []
+
+        while not itDG.isDone():
+            nodeMObjects.append(itDG.currentNode())
+            itDG.next()
+
+        nodes = []
+        for mObject in nodeMObjects:
+            if mObject.hasFn(om.MFn.kTransform):
+                nodes.append(DagNode(mObject))
+            else:
+                nodes.append(DependencyNode(mObject))
+        return nodes
 
 
 class DagNode(DependencyNode):
@@ -514,7 +590,7 @@ class DagNode(DependencyNode):
     @property
     def worldPosition(self):
         _worldMatrixList = self.worldMatrixList
-        return om.MVector(*_worldMatrixList[3])
+        return om.MVector(*_worldMatrixList[-4:-1])
 
     @worldPosition.setter
     def worldPosition(self, vector):
@@ -523,8 +599,7 @@ class DagNode(DependencyNode):
 
     @property
     def worldRotation(self):
-        quat = om.MQuaternion()
-        self.fnTransform.getRotation(quat, om.MSpace.kWorld)
+        quat = self.fnTransform.rotation(om.MSpace.kWorld, True)
         return quat
 
     @worldRotation.setter
@@ -693,22 +768,80 @@ class DagNode(DependencyNode):
             for axis in ['X', 'Y', 'Z']:
                 self.unlockAttr(attr + axis)
 
-    def constrain(self, parents, constraintType='point', weights=None, maintainOffset=False):
-        if not weights:
-            weights = [1.0] * len(parents)
+    def _constrainTo(self, parent, constraintType):
+        offsetParentMatrixPlug = self.findPlug('offsetParentMatrix')
+        existingPickMatrix = None
+        matrixUsageValues = [not bool(matrixPart in CONSTRAINT_TYPE_USAGES[constraintType].keys()) for matrixPart in PICK_MATRIX_PARTS]
 
-        for i in range((len(parents))):
-            parent = parents[i]
-            if constraintType == 'point':
-                const = cmds.pointConstraint(parent, self.name, maintainOffset=maintainOffset, weight=weights[i])
-            elif constraintType == 'orient':
-                const = cmds.orientConstraint(parent, self.name, maintainOffset=maintainOffset, weight=weights[i])
-            elif constraintType == 'parent':
-                const = cmds.parentConstraint(parent, self.name, maintainOffset=maintainOffset, weight=weights[i])
-            else:
-                raise ValueError(constraintType + ' is not an accepted constraint type.')
+        # Check if we're already constrained to this parent
+        if self.isNodeUpstream(offsetParentMatrixPlug, parent.mObject):
+            existingPickMatrix = self.findUpstreamNodesOfType(om.MFn.kPickMatrix, sourcePlug=offsetParentMatrixPlug)
+            if existingPickMatrix:
+                existingPickMatrix = existingPickMatrix[0]
+                existingPickMatrixUsageValues = [existingPickMatrix.get(matrixPart) for matrixPart in PICK_MATRIX_PARTS]
+                if existingPickMatrixUsageValues == matrixUsageValues:
+                    om.MGlobal.displayInfo('{0} is already parent constrained to {1}'.format(self, parent))
+                    return
 
-        return const
+        # Create a 'pickMatrix' node and make it only use translation
+        if not existingPickMatrix:
+            pickMatrixNode = DependencyNode(Scene.createNode('pickMatrix', self.name + '_pickMatrix1'))
+        else:
+            pickMatrixNode = existingPickMatrix
+
+        for matrixPart in PICK_MATRIX_PARTS:
+            pickMatrixNode.set(matrixPart, not bool(matrixPart in CONSTRAINT_TYPE_USAGES[constraintType].keys()))
+
+        if not existingPickMatrix:
+            parent.connect(parent.findPlug('worldMatrix'), pickMatrixNode.findPlug('inputMatrix'))
+            pickMatrixNode.connect(pickMatrixNode.findPlug('outputMatrix'), self.findPlug('offsetParentMatrix'))
+
+    # TODO: support multi constraints
+
+    def parentConstrainTo(self, parent, maintainOffset=False):
+        if maintainOffset:
+            _previousPosition = self.worldPosition
+            _previousRotation = self.worldRotation
+            # TODO: maintain scale offset
+
+        self._constrainTo(parent, 'parent')
+
+        if maintainOffset:
+            self.worldPosition = _previousPosition
+            self.worldRotation = _previousRotation
+
+    def pointConstrainTo(self, parent, maintainOffset=False):
+        if maintainOffset:
+            _previousPosition = self.worldPosition
+            _previousRotation = self.worldRotation
+
+        self._constrainTo(parent, 'point')
+
+        if maintainOffset:
+            self.worldPosition = _previousPosition
+            self.worldRotation = _previousRotation
+
+    def orientConstrainTo(self, parent, maintainOffset=False):
+        if maintainOffset:
+            _previousPosition = self.worldPosition
+            _previousRotation = self.worldRotation
+
+        self._constrainTo(parent, 'orient')
+
+        # TODO: this puts the pivots off for the rotation, which gives unnatural results for an orient constraint
+        if maintainOffset:
+            self.worldPosition = _previousPosition
+            self.worldRotation = _previousRotation
+
+    def scaleConstrainTo(self, parent, maintainOffset=False):
+        self._constrainTo(parent, 'scale')
+
+    def alignConstrainTo(self, parent, maintainOffset=False):
+        # use aimMatrix "align" functionality
+        raise NotImplementedError()
+
+    def aimAt(self, target, aimVector=[1,0,0], upVector=[0,1,0]):
+        raise NotImplementedError()
 
 
 class Shape(DagNode):
@@ -877,23 +1010,11 @@ class Mesh(Shape):
             raise RuntimeError('Given object type is not compatible. Is the object a polygonal mesh?')
 
     def getSkinCluster(self):
-        itDG = om.MItDependencyGraph(self.mObject, om.MFn.kSkinClusterFilter, om.MItDependencyGraph.kUpstream,
-                                     om.MItDependencyGraph.kDepthFirst, om.MItDependencyGraph.kNodeLevel)
-
-        if itDG.isDone():
-            # No skin cluster. Are you sure you passed a mesh?
+        _upstreamSkinClusters = self.findUpstreamNodesOfType(om.MFn.kSkinClusterFilter)
+        if not _upstreamSkinClusters:
             return None
-
-        skinClusterMObjArray = om.MObjectArray()
-
-        while not itDG.isDone():
-            currentNode = itDG.currentNode()
-            skinClusterMObjArray.append(currentNode)
-
-            itDG.next()
-
-        # Return the first item in the array
-        return SkinCluster(skinClusterMObjArray[0])
+        else:
+            return SkinCluster(_upstreamSkinClusters[0].mObject)
 
     def getShaders(self):
         '''Returns the per-polygon shader assignment for this instance of the mesh'''
@@ -926,7 +1047,7 @@ class Mesh(Shape):
                 if shaderGroupSet.isMember(self.shape.mObject):
                     shaderGroupSet.removeMember(self.shape.mObject)
 
-        material = Material(material)
+        material = Shader(material)
         shaderGroupMObject = material.shaderGroup
 
         if not shaderGroupMObject:
@@ -1277,12 +1398,23 @@ class ShaderGroup(DependencyNode):
         surfaceShaderPlug = self.findPlug('surfaceShader')
         inputPlug = surfaceShaderPlug.source()
         # TODO: do type check
-        return Material(inputPlug.node())
+        return Shader(inputPlug.node())
 
 
-class Material(DependencyNode):
+class Shader(DependencyNode):
+    blinnTextureSlotNames = {'albedo': 'color', 'alpha': 'transparency', 'roughness': 'eccentricity',
+                             'metalness': 'reflectivity'}
+    arnoldTextureSlotNames = {'albedo': 'baseColor', 'alpha': 'opacity', 'roughness': 'specularRoughness'}
+
     def __init__(self, seed):
-        super(Material, self).__init__(seed)
+        super(Shader, self).__init__(seed)
+
+    @property
+    def textures(self):
+        _textures = {}
+        for textureType in ['albedo', 'specular', 'alpha', 'normal', 'roughness', 'metalness']:
+            _textures[textureType] = getattr(self, textureType + 'Texture')
+        return _textures
 
     @property
     def shaderGroup(self):
@@ -1301,13 +1433,44 @@ class Material(DependencyNode):
         return ShaderGroup(shaderGroupMObject)
 
     @property
-    def isArnoldMaterial(self):
+    def isArnoldShader(self):
         result = False
         pluginName = self.fnDependencyNode.pluginName
         if pluginName and pluginName.endswith('mtoa.mll'):
             result = True
 
         return result
+
+    @property
+    def albedoTexture(self):
+        return self.getSimpleTexture(self.getTextureSlotName('albedo'))
+
+    @property
+    def specularTexture(self):
+        return self.getSimpleTexture(self.getTextureSlotName('specularColor'))
+
+    @property
+    def alphaTexture(self):
+        return self.getSimpleTexture(self.getTextureSlotName('alpha'))
+
+    @property
+    def normalTexture(self):
+        textureSlotName = self.getTextureSlotName('normalCamera')
+        bump2dNode = self.getInputConnection(textureSlotName)
+        if not bump2dNode:
+            return None
+
+        texturePath = bump2dNode.getFileTexturePath('bumpValue')
+
+        return texturePath
+
+    @property
+    def roughnessTexture(self):
+        return self.getSimpleTexture(self.getTextureSlotName('roughness'))
+
+    @property
+    def metalnessTexture(self):
+        return self.getSimpleTexture(self.getTextureSlotName('metalness'))
 
     def getConnectedShapes(self):
         # get the members of the shader group. Polygonal members will return the shape
@@ -1323,23 +1486,24 @@ class Material(DependencyNode):
 
         return shapes
 
-    def getDiffuseColorTexture(self):
-        raise NotImplementedError()
+    def getTextureSlotName(self, textureType):
+        isArnold = self.isArnoldShader
 
-    def getSpecularTexture(self):
-        raise NotImplementedError()
+        if isArnold:
+            if textureType in self.arnoldTextureSlotNames.keys():
+                return self.arnoldTextureSlotNames[textureType]
+            else:
+                return textureType
+        else:
+            if textureType in self.blinnTextureSlotNames.keys():
+                return self.blinnTextureSlotNames[textureType]
+            else:
+                return textureType
 
-    def getAlphaTexure(self):
-        raise NotImplementedError()
+    def getSimpleTexture(self, textureSlotName):
+        texturePath = self.getFileTexturePath(textureSlotName)
 
-    def getNormalTexture(self):
-        raise NotImplementedError()
-
-    def getRoughnessTexture(self):
-        raise NotImplementedError()
-
-    def getMetalnessTexture(self):
-        raise NotImplementedError()
-
-
-
+        if texturePath:
+            return texturePath
+        else:
+            return self.get(textureSlotName)
