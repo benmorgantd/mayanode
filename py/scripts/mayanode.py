@@ -19,6 +19,9 @@ DISPLAY_COLORS = {'black': 1, 'grey': 3, 'blue': 6, 'pink': 9, 'red': 13, 'lime'
 
 SPACES = {'world': om.MSpace.kWorld, 'object': om.MSpace.kObject, 'local': om.MSpace.kTransform}
 
+ORIGIN_POINT = om.MPoint.kOrigin
+ORIGIN_POINT_FLOAT = om.MFloatPoint.kOrigin
+
 NULL_OBJECT = om.MObject.kNullObj
 DG_MODIFIER = om.MDGModifier()
 DAG_MODIFIER = om.MDagModifier()
@@ -29,7 +32,8 @@ INVALID_NODE_TYPES = ['shape', 'curve']
 PICK_MATRIX_PARTS = {'useTranslate', 'useRotate', 'useScale', 'useShear'}
 CONSTRAINT_TYPE_USAGES = {'parent': {}, 'point': {'useRotate': False, 'useScale': False, 'useShear': False},
                           'orient': {'useTranslate': False, 'useScale': False, 'useShear': False},
-                          'scale': {'useTranslate': False, 'useRotate': False}}
+                          'scale': {'useTranslate': False, 'useRotate': False},
+                          'aim': {'useTranslate': False, 'useScale': False, 'useShear': False}}
 
 
 class Scene(object):
@@ -276,13 +280,13 @@ class DependencyNode(object):
                     raise AttributeError('The given MFnNumericData type {0} is not supported.'.format(unitType))
             elif plugType == om.MFn.kAttribute3Double:
                 _result = []
-                for i in range(plug.numChildren()):
+                for i in xrange(plug.numChildren()):
                     _childPlug = plug.child(i)
                     _result.append(_childPlug.asDouble())
                 return _result
             elif plugType == om.MFn.kAttribute3Float:
                 _result = []
-                for i in range(plug.numChildren()):
+                for i in xrange(plug.numChildren()):
                     _childPlug = plug.child(i)
                     _result.append(_childPlug.asFloat())
                 return _result
@@ -290,7 +294,7 @@ class DependencyNode(object):
                 fnTypedAttr = om.MFnTypedAttribute(attributeMObj)
                 typedAttrType = fnTypedAttr.attrType()
                 if typedAttrType == 4:
-                  return plug.asString()
+                    return plug.asString()
                 elif typedAttrType == 5:
                     # kMatrix type. Get matrix data without the MFnTransform
                     if plug.isArray:
@@ -305,15 +309,18 @@ class DependencyNode(object):
                 else:
                     print(typedAttrType)
 
-                raise AttributeError('getattr is currently not supported for attribute type {}.'.format(attributeMObj.apiTypeStr))
+                raise AttributeError(
+                    'getattr is currently not supported for attribute type {}.'.format(attributeMObj.apiTypeStr))
             elif plugType == om.MFn.kEnumAttribute:
                 return plug.asInt()
             elif plugType == om.MFn.kStringData:
                 return plug.asString()
             elif plugType == om.MFn.kMessageAttribute:
-                raise AttributeError('getattr is currently not supported for attribute type {}.'.format(attributeMObj.apiTypeStr))
+                raise AttributeError(
+                    'getattr is currently not supported for attribute type {}.'.format(attributeMObj.apiTypeStr))
             else:
-                raise AttributeError('getattr is currently not supported for attribute type {}.'.format(attributeMObj.apiTypeStr))
+                raise AttributeError(
+                    'getattr is currently not supported for attribute type {}.'.format(attributeMObj.apiTypeStr))
 
     def set(self, attribute, value):
         if hasattr(self, 'fnDependencyNode') and self.fnDependencyNode.hasAttribute(attribute):
@@ -352,7 +359,7 @@ class DependencyNode(object):
                     _eulerRot = value.asEulerRotation()
                     _eulerRot = _eulerRot.reorder(ROTATE_ORDERS[self.get('rotateOrder')])
                     value = _eulerRot
-                for i in range(plug.numChildren()):
+                for i in xrange(plug.numChildren()):
                     _childPlug = plug.child(i)
                     _childPlug.setDouble(value[i])
 
@@ -369,7 +376,7 @@ class DependencyNode(object):
                     if fnTypedAttr.array:
                         raise RuntimeError(
                             '{0}.DependencyNode : set() is unsupported for Matrix Array attribute {1}'.format(__name__,
-                                plug.name()))
+                                                                                                              plug.name()))
 
                     _xformMatrix = om.MTransformationMatrix(value)
                     _translateVector = _xformMatrix.translation(om.MSpace.kWorld)
@@ -394,7 +401,7 @@ class DependencyNode(object):
         if self.fnDependencyNode.hasAttribute(plugString):
             plug = self.fnDependencyNode.findPlug(plugString, False)
             if plug.isArray:
-                _childPlug = plug.elementByLogicalIndex(0)
+                _childPlug = plug.elementByLogicalIndex(multiIndex)
                 return _childPlug
             else:
                 return plug
@@ -526,6 +533,8 @@ class DagNode(DependencyNode):
             newParent = NULL_OBJECT
         elif isinstance(newParent, DependencyNode):
             newParent = newParent.mObject
+        elif isinstance(newParent, basestring):
+            newParent = Scene.stringToMObject(newParent)
 
         dagMod = om.MDagModifier()
         dagMod.reparentNode(self.mObject, newParent)
@@ -669,7 +678,7 @@ class DagNode(DependencyNode):
             if _shapeMObj.hasFn(om.MFn.kMesh):
                 _mesh = Mesh(_shapeMObj)
                 if not _mesh.fnDagNode.isIntermediateObject:
-                    #TODO there are loops happening here that shouldn't be happening
+                    # TODO there are loops happening here that shouldn't be happening
                     return _mesh
             elif _shapeMObj.hasFn(om.MFn.kNurbsCurve):
                 _curve = Curve(_shapeMObj)
@@ -690,7 +699,7 @@ class DagNode(DependencyNode):
 
         matrixList = []
 
-        for i in range(16):
+        for i in xrange(16):
             matrixList.append(matrix[i])
 
         return matrixList
@@ -771,7 +780,8 @@ class DagNode(DependencyNode):
     def _constrainTo(self, parent, constraintType):
         offsetParentMatrixPlug = self.findPlug('offsetParentMatrix')
         existingPickMatrix = None
-        matrixUsageValues = [not bool(matrixPart in CONSTRAINT_TYPE_USAGES[constraintType].keys()) for matrixPart in PICK_MATRIX_PARTS]
+        matrixUsageValues = [not bool(matrixPart in CONSTRAINT_TYPE_USAGES[constraintType].keys()) for matrixPart in
+                             PICK_MATRIX_PARTS]
 
         # Check if we're already constrained to this parent
         if self.isNodeUpstream(offsetParentMatrixPlug, parent.mObject):
@@ -780,20 +790,26 @@ class DagNode(DependencyNode):
                 existingPickMatrix = existingPickMatrix[0]
                 existingPickMatrixUsageValues = [existingPickMatrix.get(matrixPart) for matrixPart in PICK_MATRIX_PARTS]
                 if existingPickMatrixUsageValues == matrixUsageValues:
-                    om.MGlobal.displayInfo('{0} is already parent constrained to {1}'.format(self, parent))
+                    om.MGlobal.displayInfo('{0} is already {1} constrained to {2}'.format(self, constraintType, parent))
                     return
 
         # Create a 'pickMatrix' node and make it only use translation
         if not existingPickMatrix:
-            pickMatrixNode = DependencyNode(Scene.createNode('pickMatrix', self.name + '_pickMatrix1'))
+            pickMatrixNode = DependencyNode(Scene.createNode('pickMatrix', self.name + '_pickMatrix'))
         else:
             pickMatrixNode = existingPickMatrix
 
         for matrixPart in PICK_MATRIX_PARTS:
             pickMatrixNode.set(matrixPart, not bool(matrixPart in CONSTRAINT_TYPE_USAGES[constraintType].keys()))
 
-        if not existingPickMatrix:
-            parent.connect(parent.findPlug('worldMatrix'), pickMatrixNode.findPlug('inputMatrix'))
+        if existingPickMatrix:
+            # make sure it's not connected to something different like an aim matrix node
+            pickMatrixInputMatrixPlug = pickMatrixNode.findPlug('inputMatrix')
+            sourceConnection = pickMatrixInputMatrixPlug.source()
+            if not sourceConnection.isNull:
+                pickMatrixNode.disconnect(sourceConnection, pickMatrixInputMatrixPlug)
+        else:
+            parent.connect(parent.findPlug('matrix'), pickMatrixNode.findPlug('inputMatrix'))
             pickMatrixNode.connect(pickMatrixNode.findPlug('outputMatrix'), self.findPlug('offsetParentMatrix'))
 
     # TODO: support multi constraints
@@ -801,8 +817,7 @@ class DagNode(DependencyNode):
     def parentConstrainTo(self, parent, maintainOffset=False):
         if maintainOffset:
             _previousPosition = self.worldPosition
-            _previousRotation = self.worldRotation
-            # TODO: maintain scale offset
+            _previousRotation = self.worldRotation  # TODO: maintain scale offset
 
         self._constrainTo(parent, 'parent')
 
@@ -840,16 +855,60 @@ class DagNode(DependencyNode):
         # use aimMatrix "align" functionality
         raise NotImplementedError()
 
-    def aimAt(self, target, aimVector=[1,0,0], upVector=[0,1,0]):
-        raise NotImplementedError()
+    def aimConstrainTo(self, target, aimVector=(1, 0, 0), upVector=(0, 1, 0)):
+        offsetParentMatrixPlug = self.findPlug('offsetParentMatrix')
+        existingAimMatrix = None
+        existingPickMatrix = None
+        matrixUsageValues = [not bool(matrixPart in CONSTRAINT_TYPE_USAGES['aim'].keys()) for matrixPart in
+                             PICK_MATRIX_PARTS]
+
+        if self.isNodeUpstream(offsetParentMatrixPlug, target.mObject):
+            existingPickMatrix = self.findUpstreamNodesOfType(om.MFn.kPickMatrix, sourcePlug=offsetParentMatrixPlug)
+            existingPickMatrix = existingPickMatrix[0] if existingPickMatrix else None
+            existingAimMatrix = self.findUpstreamNodesOfType(om.MFn.kAimMatrix, sourcePlug=offsetParentMatrixPlug)
+            existingAimMatrix = existingAimMatrix[0] if existingAimMatrix else None
+
+        # Check if we're already constrained to this parent
+        if self.isNodeUpstream(offsetParentMatrixPlug, target.mObject):
+            existingAimMatrix = self.findUpstreamNodesOfType(om.MFn.kAimMatrix, sourcePlug=offsetParentMatrixPlug)
+            if existingAimMatrix:
+                existingAimMatrix = existingAimMatrix[0]
+
+        if not existingPickMatrix:
+            pickMatrixNode = DependencyNode(Scene.createNode('pickMatrix', self.name + '_pickMatrix'))
+        else:
+            pickMatrixNode = existingPickMatrix
+
+        for matrixPart in PICK_MATRIX_PARTS:
+            pickMatrixNode.set(matrixPart, not bool(matrixPart in CONSTRAINT_TYPE_USAGES['aim'].keys()))
+
+        if not existingAimMatrix:
+            aimMatrixNode = DependencyNode(Scene.createNode('aimMatrix', self.name + '_aimMatrix'))
+        else:
+            aimMatrixNode = existingAimMatrix
+
+        if not existingAimMatrix and not existingPickMatrix:
+            target.connect(target.findPlug('matrix'), aimMatrixNode.findPlug('inputMatrix'))
+            aimMatrixNode.connect(aimMatrixNode.findPlug('outputMatrix'), pickMatrixNode.findPlug('inputMatrix'))
+            pickMatrixNode.connect(pickMatrixNode.findPlug('outputMatrix'), self.findPlug('offsetParentMatrix'))
+
+        aimMatrixNode.set('primaryMode', 1)
+        aimMatrixNode.set('primaryInputAxisX', aimVector[0])
+        aimMatrixNode.set('primaryInputAxisY', aimVector[1])
+        aimMatrixNode.set('primaryInputAxisZ', aimVector[2])
+
+        if upVector:
+            aimMatrixNode.set('secondaryMode', 1)
+            aimMatrixNode.set('secondaryInputAxisX', upVector[0])
+            aimMatrixNode.set('secondaryInputAxisY', upVector[1])
+            aimMatrixNode.set('secondaryInputAxisZ', upVector[2])
 
 
 class Shape(DagNode):
     def __init__(self, seed):
         super(Shape, self).__init__(seed)
 
-        # if not self.mObject.hasFn(om.MFn.kShape):
-        #     raise ValueError('\'{0}\' is not a subclass of Shape.'.format(self.fnDependencyNode.name()))
+        # if not self.mObject.hasFn(om.MFn.kShape):  #     raise ValueError('\'{0}\' is not a subclass of Shape.'.format(self.fnDependencyNode.name()))
 
     @property
     def transform(self):
@@ -862,8 +921,7 @@ class Mesh(Shape):
     def __init__(self, seed):
         super(Mesh, self).__init__(seed)
 
-        # if not self.mObject.hasFn(om.MFn.kMesh):
-        #     raise ValueError('\'{0}\' is not a subclass of Mesh.'.format(self.fnDependencyNode.name()))
+        # if not self.mObject.hasFn(om.MFn.kMesh):  #     raise ValueError('\'{0}\' is not a subclass of Mesh.'.format(self.fnDependencyNode.name()))
 
     @classmethod
     def getVertexNeighbors(cls, dag, components):
@@ -897,8 +955,8 @@ class Mesh(Shape):
         # floatMatrix = None
 
         if transformationMatrix:
-            transformationMatrix = om.MMatrix(transformationMatrix)
-            # floatMatrix = om.MFloatMatrix(transformationMatrix)
+            transformationMatrix = om.MMatrix(
+                transformationMatrix)  # floatMatrix = om.MFloatMatrix(transformationMatrix)
 
         vertices = []
         polygonCounts = []
@@ -971,14 +1029,14 @@ class Mesh(Shape):
             fnMesh.setUVs(uValues, vValues)
             fnMesh.assignUVs(uvCounts, uvIds)
 
-        print(normals)
-        print(len(normals))
-        print(faceIds)
-        print(len(faceIds))
-        print(vertexIds)
-        print(len(vertexIds))
-        print(len(vertices))
-        print(sum(polygonCounts))
+        # print(normals)
+        # print(len(normals))
+        # print(faceIds)
+        # print(len(faceIds))
+        # print(vertexIds)
+        # print(len(vertexIds))
+        # print(len(vertices))
+        # print(sum(polygonCounts))
 
         if len(normals) == sum(polygonCounts):
             # completely hard shaded
@@ -992,8 +1050,6 @@ class Mesh(Shape):
             for i in xrange(len(faceIds)):
                 faceVertexNormals.append(normals[vertexIds[i]])
 
-            print(faceVertexNormals)
-
             fnMesh.setFaceVertexNormals(faceVertexNormals, faceIds, vertexIds)
 
         DG_MODIFIER.renameNode(meshMObject, name)
@@ -1001,10 +1057,175 @@ class Mesh(Shape):
 
         return meshMObject
 
+    def projectOnto(self, targetMesh, projectFromNormal=False):
+        '''Returns the vertex id map and the corresponding position mapping between the own and target mesh.
+        Does a world space closestPoint OR closestIntersection projection of the target mesh onto the own mesh.
+        '''
+
+        # get the ownMesh's vertex positions
+        targetFnMesh = targetMesh.fnMesh
+        ownFnMesh = self.fnMesh
+        ownMeshVertexPositions = targetFnMesh.getPoints(om.MSpace.kWorld)
+        faceVertexCounts, meshRelativeFaceIds = targetFnMesh.getVertices()
+        ownMeshIter = om.MItMeshVertex(self.dagPath)
+        hasMissedProjections = False
+
+        # OwnVertexIndex >>> ClosestTargetVertexIndex
+        closestVertexMapping = {}
+        # OwnVertexPosition >>> ClosestTargetVertexPosition
+        vertexPositionsMapping = []
+        closestPointMapping = {}
+
+        while not ownMeshIter.isDone():
+            ownVertexIndex = int(ownMeshIter.index())
+            # get the closest point on the own mesh to this targetMesh vertex
+            vertexPosition = ownMeshIter.position(om.MSpace.kWorld)
+
+            if projectFromNormal:
+                raySource = om.MFloatPoint(vertexPosition.x, vertexPosition.y, vertexPosition.z)
+                # get the angle weighted vertex normal
+                vertexNormal = ownFnMesh.getVertexNormal(ownVertexIndex, True, om.MSpace.kWorld)
+                rayDirection = om.MFloatVector(vertexNormal.x, vertexNormal.y, vertexNormal.z)
+                maxDistance = 1.0
+                testBothDirections = True
+                # returns closestPoint, hitRayParam, closestFaceIndex, hitTriangle, hitBary1, hitBary2
+                hitResults = targetFnMesh.closestIntersection(raySource, rayDirection, om.MSpace.kWorld, maxDistance,
+                                                              testBothDirections)
+
+                if hitResults[0] == ORIGIN_POINT_FLOAT and hitResults[1] == 0.0:
+                    # No hit
+                    hasMissedProjections = True
+                    closestPoint, closestFaceIndex = targetFnMesh.getClosestPoint(vertexPosition)
+                else:
+                    closestPoint = om.MPoint(hitResults[0].x, hitResults[0].y, hitResults[0].z)
+                    closestFaceIndex = hitResults[2]
+
+            else:
+                closestPoint, closestFaceIndex = targetFnMesh.getClosestPoint(vertexPosition)
+
+            closestDistance = 1000.0
+            closestVertexId = 0
+            numFaceVertices = faceVertexCounts[closestFaceIndex]
+            closestVertexPosition = ORIGIN_POINT
+            faceVertexIds = targetFnMesh.getPolygonVertices(closestFaceIndex)
+
+            closestPointVector = om.MVector(closestPoint.x, closestPoint.y, closestPoint.z)
+
+            for i in xrange(numFaceVertices):
+                # mesh-relative face id
+                faceVertexId = faceVertexIds[i]
+                faceVertexPosition = ownMeshVertexPositions[faceVertexId]
+                faceVertexVector = om.MVector(faceVertexPosition.x, faceVertexPosition.y, faceVertexPosition.z)
+                hitPointToVertexPositionDistance = (closestPointVector - faceVertexVector).length()
+
+                if hitPointToVertexPositionDistance < closestDistance:
+                    closestVertexId = faceVertexId
+                    closestDistance = hitPointToVertexPositionDistance
+                    closestVertexPosition = faceVertexPosition
+
+            closestVertexMapping[ownVertexIndex] = int(closestVertexId)
+            vertexPositionsMapping.append((vertexPosition, closestVertexPosition))
+            closestPointMapping[ownVertexIndex] = closestPoint
+
+            ownMeshIter.next()
+
+        targetFnMesh.freeCachedIntersectionAccelerator()
+
+        if hasMissedProjections:
+            om.MGlobal.displayWarning('Some projections had no hit and the closest point was used as a backup.')
+
+        return closestVertexMapping, vertexPositionsMapping, closestPointMapping
+
+    def isInside(self, targetMesh):
+        '''Checks if any point on this mesh is inside the given mesh. If they are, it colors them Red'''
+
+        # get the normals on the target mesh
+        targetFnMesh = targetMesh.fnMesh
+        targetMeshNormals = targetFnMesh.getNormals(om.MSpace.kWorld)
+
+        ownFaceIter = om.MItMeshPolygon(self.dagPath)
+
+        facesInsideMesh = []
+
+        while not ownFaceIter.isDone():
+            facePosition = ownFaceIter.center(om.MSpace.kWorld)
+            faceNormal = ownFaceIter.getNormal(om.MSpace.kWorld)
+
+            raySource = om.MFloatPoint(facePosition.x, facePosition.y, facePosition.z)
+            rayDirection = om.MFloatVector(faceNormal.x, faceNormal.y, faceNormal.z)
+            maxDistance = 10.0
+            testBothDirections = False
+            # returns closestPoint, hitRayParam, closestFaceIndex, hitTriangle, hitBary1, hitBary2
+            hitResults = targetFnMesh.closestIntersection(raySource, rayDirection, om.MSpace.kWorld, maxDistance,
+                                                          testBothDirections)
+
+            if hitResults[0] == ORIGIN_POINT_FLOAT and hitResults[1] == 0.0:
+                # no hit. It's definitely outside the mesh
+                ownFaceIter.next()
+            else:
+                closestPoint = hitResults[0]
+                closestFaceIndex = hitResults[2]
+
+                normalSum = om.MFloatVector()
+                faceVertexIndices = targetFnMesh.getPolygonVertices(closestFaceIndex)
+                numFaceVertices = len(faceVertexIndices)
+
+                for i in xrange(numFaceVertices):
+                    # average the face's normals
+                    normalSum += targetMeshNormals[faceVertexIndices[i]]
+
+                faceNormal = (normalSum / float(numFaceVertices)).normal()
+
+                vertexPositionVector = om.MFloatVector(facePosition.x, facePosition.y, facePosition.z)
+                closestPointVector = om.MFloatVector(closestPoint.x, closestPoint.y, closestPoint.z)
+
+                vertexPositionToClosestPointVector = closestPointVector - vertexPositionVector
+
+                dot = vertexPositionToClosestPointVector * faceNormal
+
+                if dot > 0.0:
+                    # inside the mesh
+                    facesInsideMesh.append(int(ownFaceIter.index()))
+
+                ownFaceIter.next()
+
+        targetFnMesh.freeCachedIntersectionAccelerator()
+
+        if len(facesInsideMesh):
+            return True, facesInsideMesh
+        else:
+            return False, facesInsideMesh
+
+
+    '''
+    import mayanode
+    reload(mayanode)
+    x = mayanode.DagNode('pSphere1')
+    y = mayanode.DagNode('pCube1')
+    
+    print(y.shape.isInside(x.shape))
+    '''
+        
+
+    '''
+    import mayanode
+    reload(mayanode)
+    x = mayanode.DagNode('pCylinder1')
+    y = mayanode.DagNode('pPlane1')
+    
+    idMap, positionMap = x.shape.getClosestComponentMapping(x.shape, y.shape, closestAlongNormal=True)
+    
+    for points in positionMap:
+        mayanode.LinearCurve.create(points)
+
+
+    '''
+
     @property
     def fnMesh(self):
         try:
-            _fnMesh = om.MFnMesh(self.mObject)
+            # world space operations only work if the fnMesh was created from a dag path
+            _fnMesh = om.MFnMesh(self.dagPath)
             return _fnMesh
         except RuntimeError:
             raise RuntimeError('Given object type is not compatible. Is the object a polygonal mesh?')
@@ -1061,8 +1282,7 @@ class Curve(DagNode):
     def __init__(self, seed):
         super(Curve, self).__init__(seed)
 
-        # if not self.mObject.hasFn(om.MFn.kNurbsCurve):
-        #     raise ValueError('\'{0}\' is not a subclass of Curve.'.format(self.fnDependencyNode.name()))
+        # if not self.mObject.hasFn(om.MFn.kNurbsCurve):  #     raise ValueError('\'{0}\' is not a subclass of Curve.'.format(self.fnDependencyNode.name()))
 
     @classmethod
     def fitCurveToPoints(cls, points, name='fitCurve'):
@@ -1119,15 +1339,14 @@ class Curve(DagNode):
         cmds.xform(self.shape + '.cv[0:]', translation=(center.x, center.y, center.z), relative=True)
 
 
-class LinearCurve(DagNode):
+class LinearCurve(Curve):
     def __init__(self, seed):
         super(LinearCurve, self).__init__(seed)
 
-        # if not self.shape.mObject.hasFn(om.MFn.kNurbsCurve):
-        #     raise ValueError('\'{0}\' is not a subclass of Curve.'.format(self.fnDependencyNode.name()))
+        # if not self.shape.mObject.hasFn(om.MFn.kNurbsCurve):  #     raise ValueError('\'{0}\' is not a subclass of Curve.'.format(self.fnDependencyNode.name()))
 
     @classmethod
-    def create(cls, points=[], forceCvCount=False):
+    def create(cls, points=(), forceCvCount=False):
         om.MGlobal.clearSelectionList()
         _points = om.MPointArray()
         _knots = om.MDoubleArray()
@@ -1140,7 +1359,7 @@ class LinearCurve(DagNode):
             if forceCvCount:
                 # Force the cv count to be the same on rig control curves so their shape can be easily changed
                 _lastPoint = _points[len(_points) - 1]
-                for j in range(len(points), forceCvCount):
+                for j in xrange(len(points), forceCvCount):
                     # make all the remaining CVs equal to the same as the last point
                     _points.append(om.MPoint(_lastPoint))
                     _knots.append(j)
@@ -1179,8 +1398,7 @@ class SkinCluster(DependencyNode):
     def __init__(self, seed):
         super(SkinCluster, self).__init__(seed)
 
-        # if not self.mObject.hasFn(om.MFn.kSkinClusterFilter):
-        #     raise ValueError('\'{0}\' is not a SkinCluster type object..'.format(self.fnDependencyNode.name()))
+        # if not self.mObject.hasFn(om.MFn.kSkinClusterFilter):  #     raise ValueError('\'{0}\' is not a SkinCluster type object..'.format(self.fnDependencyNode.name()))
 
     @classmethod
     def pruneVertexWeightList(cls, weights, influenceCount, maxInfluence=4, normalize=True):
@@ -1191,7 +1409,7 @@ class SkinCluster(DependencyNode):
         prunedWeights = [0.0] * influenceCount
 
         if maxInfluence > 1:
-            for i in range(influenceCount):
+            for i in xrange(influenceCount):
                 if i > (maxInfluence - 1):
                     prunedWeights[weights.index(sortedWeights[i])] = 0.0
                 else:
@@ -1507,3 +1725,6 @@ class Shader(DependencyNode):
             return texturePath
         else:
             return self.get(textureSlotName)
+
+# TODO: create a constraint type
+
