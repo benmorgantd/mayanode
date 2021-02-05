@@ -9,6 +9,9 @@ import maya.api.OpenMayaAnim as omAnim
 
 __all__ = [className for className, obj in inspect.getmembers(sys.modules[__name__]) if inspect.isclass(obj)]
 
+def maya_useNewAPI():
+    pass
+
 # CONSTANTS #
 
 ROTATE_ORDERS = [om.MEulerRotation.kXYZ, om.MEulerRotation.kYZX, om.MEulerRotation.kZXY, om.MEulerRotation.kXZY,
@@ -34,6 +37,8 @@ CONSTRAINT_TYPE_USAGES = {'parent': {}, 'point': {'useRotate': False, 'useScale'
                           'orient': {'useTranslate': False, 'useScale': False, 'useShear': False},
                           'scale': {'useTranslate': False, 'useRotate': False},
                           'aim': {'useTranslate': False, 'useScale': False, 'useShear': False}}
+
+INFINITY = sys.float_info.max
 
 
 class Scene(object):
@@ -187,20 +192,23 @@ class DependencyNode(object):
 
     @classmethod
     def connect(cls, sourcePlug, destPlug, force=True):
-        _sourceFnAttr = om.MFnAttribute(sourcePlug.attribute())
-        _destFnAttr = om.MFnAttribute(destPlug.attribute())
+        cmds.connectMayanodeAttr(sourcePlug.name(), destPlug.name(), forceConnection=force)
 
-        if not _sourceFnAttr.connectable or not _destFnAttr.connectable:
-            raise ValueError('A given plug is not connectable.')
-        elif not _destFnAttr.writable:
-            raise ValueError('The destination plug is not writable.')
-
-        existingDestPlugConnection = destPlug.source()
-        if force and not existingDestPlugConnection.isNull:
-            DG_MODIFIER.disconnect(existingDestPlugConnection, destPlug)
-
-        DG_MODIFIER.connect(sourcePlug, destPlug)
-        DG_MODIFIER.doIt()
+        #
+        # _sourceFnAttr = om.MFnAttribute(sourcePlug.attribute())
+        # _destFnAttr = om.MFnAttribute(destPlug.attribute())
+        #
+        # if not _sourceFnAttr.connectable or not _destFnAttr.connectable:
+        #     raise ValueError('A given plug is not connectable.')
+        # elif not _destFnAttr.writable:
+        #     raise ValueError('The destination plug is not writable.')
+        #
+        # existingDestPlugConnection = destPlug.source()
+        # if force and not existingDestPlugConnection.isNull:
+        #     DG_MODIFIER.disconnect(existingDestPlugConnection, destPlug)
+        #
+        # DG_MODIFIER.connect(sourcePlug, destPlug)
+        # DG_MODIFIER.doIt()
 
     @classmethod
     def disconnect(cls, sourcePlug, destPlug):
@@ -211,6 +219,8 @@ class DependencyNode(object):
         self._initialized = False
         # I think many OpenMaya objects inherit from MObject, so we may want to directly check types instead
         if isinstance(seed, om.MObject):
+            if seed.isNull():
+                raise ValueError('Cannot initialize {} as the given MObject is null.'.format(seed))
             self.mObject = om.MObject(seed)
         elif isinstance(seed, basestring):
             self.mObject = self.stringToMObject(seed)
@@ -219,6 +229,9 @@ class DependencyNode(object):
                 'Cannot initialize a mayanode with the given seed {0} of type {1}'.format(seed, type(seed)))
 
         self.fnDependencyNode = om.MFnDependencyNode(self.mObject)
+
+        self.checkType()
+
         self._initialized = True
 
     def __repr__(self):
@@ -241,12 +254,44 @@ class DependencyNode(object):
             return False
 
     @property
+    def mFnType(self):
+        return om.MFn.kDependencyNode, 'kDependencyNode'
+
+    @property
     def name(self):
         return self.fnDependencyNode.name()
 
     @name.setter
     def name(self, value):
         self.fnDependencyNode.setName(value)
+
+    def checkType(self):
+        _mFnType = self.mFnType
+        if not self.mObject.hasFn(_mFnType[0]):
+            raise TypeError('Give object {0} of type {1} is not a subclass of {2}.'.format(self.fnDependencyNode.name(),
+                                                                                           self.mObject.apiTypeStr,
+                                                                                           _mFnType[1]))
+        elif self.mObject.hasFn(om.MFn.kDagNode) and type(self) == DependencyNode:
+            raise TypeError('Cannot initialize {} as a DependencyNode as it is a DagNode.'.format(
+                self.fnDependencyNode.name()))
+        elif self.mObject.hasFn(om.MFn.kTransform) and type(self) == DagNode:
+            raise TypeError('Cannot initialize {} as a DagNode as it is a Transform.'.format(
+                self.fnDependencyNode.name()))
+
+    @property
+    def metadata(self):
+        if self.fnDependencyNode.hasAttribute('metadata'):
+            return json.loads(self.metadata)
+        else:
+            return {}
+
+    @metadata.setter
+    def metadata(self, value):
+        # use json.dumps. Make this value a json dictionary
+        if 'metadata' not in cmds.listAttr(self.name):
+            cmds.addAttr(self.name, longName='metadata', dataType='string')
+
+        cmds.setAttr(self.name + '.metadata', json.dumps(value), type='string')
 
     def get(self, attribute):
         if hasattr(self, 'fnDependencyNode') and self.fnDependencyNode.hasAttribute(attribute):
@@ -331,27 +376,28 @@ class DependencyNode(object):
 
             if not plugType == om.MFn.kTypedAttribute and not fnAttr.writable:
                 raise AttributeError('Given attribute {0} is not writable.'.format(fnAttr.name()))
-
             if plugType == om.MFn.kDoubleLinearAttribute:
-                plug.setDouble(value)
+                cmds.setMayanodeAttr(plug.name(), double=value)
             elif plugType == om.MFn.kDoubleAngleAttribute:
-                plug.setMAngle(value)
+                cmds.setMayanodeAttr(plug, angle=value)
             elif plugType == om.MFn.kNumericAttribute:
                 # get data type
                 fnNumericAttr = om.MFnNumericAttribute(attributeMObj)
                 unitType = fnNumericAttr.numericType()
                 if unitType == 1:
-                    plug.setBool(value)
+                    cmds.setMayanodeAttr(plug.name(), boolean=value)
                 elif unitType == 3:
-                    plug.setChar(value)
+                    # TODO: do we really need a char arg type?
+                    cmds.setMayanodeAttr(plug, string=value)
                 elif unitType == 4:
-                    plug.setShort(value)
+                    # TODO: do we really need a short arg type?
+                    cmds.setMayanodeAttr(plug, integer=value)
                 elif unitType == 7:
-                    plug.setLong(value)
+                    cmds.setMayanodeAttr(plug, integer=value)
                 elif unitType == 8:
-                    plug.setInt(value)
+                    cmds.setMayanodeAttr(plug, integer=value)
                 elif unitType in [13, 14]:
-                    plug.setFloat(value)
+                    cmds.setMayanodeAttr(plug, float=value)
                 else:
                     raise AttributeError('The given MFnNumericData type {0} is not supported.'.format(unitType))
             elif plugType == om.MFn.kAttribute3Double:
@@ -361,7 +407,7 @@ class DependencyNode(object):
                     value = _eulerRot
                 for i in xrange(plug.numChildren()):
                     _childPlug = plug.child(i)
-                    _childPlug.setDouble(value[i])
+                    cmds.setMayanodeAttr(_childPlug, float=value[i])
 
             elif plugType == om.MFn.kTypedAttribute:
                 fnTypedAttr = om.MFnTypedAttribute(attributeMObj)
@@ -389,9 +435,9 @@ class DependencyNode(object):
                     self.set('shear', _shear)
 
             elif plugType == om.MFn.kEnumAttribute:
-                plug.setInt(value)
+                cmds.setMayanodeAttr(plug.name(), integer=value)
             elif plugType == om.MFn.kStringData:
-                plug.setString(value)
+                cmds.setMayanodeAttr(plug.name(), string=value)
             elif plugType == om.MFn.kMessageAttribute:
                 raise AttributeError('set() is currently not supported for this attribute type.')
             else:
@@ -463,18 +509,35 @@ class DependencyNode(object):
         nodes = []
         for mObject in nodeMObjects:
             if mObject.hasFn(om.MFn.kTransform):
-                nodes.append(DagNode(mObject))
+                nodes.append(Transform(mObject))
             else:
                 nodes.append(DependencyNode(mObject))
         return nodes
+
+    def lockAttr(self, attr):
+        if self.fnDependencyNode.hasAttribute(attr):
+            plug = self.findPlug(attr)
+            plug.setLocked(True)
+
+    def unlockAttr(self, attr):
+        if self.fnDependencyNode.hasAttribute(attr):
+            plug = self.findPlug(attr)
+            plug.setLocked(False)
+
+    def hideAttr(self, attr):
+        if self.fnDependencyNode.hasAttribute(attr):
+            plug = self.findPlug(attr)
+            plug.setKeyable(False)
+
+    def showAttr(self, attr):
+        if self.fnDependencyNode.hasAttribute(attr):
+            plug = self.findPlug(attr)
+            plug.setKeyable(True)
 
 
 class DagNode(DependencyNode):
     def __init__(self, seed):
         super(DagNode, self).__init__(seed)
-
-        # if not self.mObject.hasFn(om.MFn.kDagNode):
-        #     raise ValueError('\'{0}\' is not a subclass of DagNode.'.format(self.fnDependencyNode.name()))
 
         self._initialized = False
 
@@ -504,6 +567,10 @@ class DagNode(DependencyNode):
         return other + self.dagPath.fullPathName()
 
     @property
+    def mFnType(self):
+        return om.MFn.kDagNode, 'kDagNode'
+
+    @property
     def name(self):
         return self.dagPath.fullPathName()
 
@@ -523,6 +590,7 @@ class DagNode(DependencyNode):
     def parent(self):
         # return the Transform of the parent
         if self.dagPath.length() > 1:
+            # TODO: put this in Transform? ...
             return DagNode(self.fnDagNode.parent(0))
         else:
             return None
@@ -564,6 +632,7 @@ class DagNode(DependencyNode):
 
         _result = []
         for i in xrange(len(_mObjArray)):
+            # TODO: put this in Transform? ...
             _result.append(DagNode(_mObjArray[i]))
         return _result
 
@@ -589,8 +658,71 @@ class DagNode(DependencyNode):
 
         _result = []
         for i in xrange(len(_mObjArray)):
+            # TODO: put this in Transform?
             _result.append(DagNode(_mObjArray[i]))
         return _result
+
+    @classmethod
+    def makeShortNameUnique(cls, name):
+        _itDag = om.MItDag(om.MItDag.kDepthFirst, om.MFn.kTransform)
+        _dag = om.MDagPath()
+        _numDuplicates = 0
+        _possibleName = name
+
+        while not _itDag.isDone():
+            if _numDuplicates:
+                _possibleName = '{0}{1}'.format(name, _numDuplicates)
+            if _itDag.partialPathName() == _possibleName:
+                _numDuplicates += 1
+            _itDag.next()
+
+        if _numDuplicates:
+            return '{0}{1}'.format(name, _numDuplicates)
+        else:
+            return name
+
+    def hasParent(self, parent):
+        if isinstance(parent, DependencyNode):
+            parent = parent.mObject
+        elif isinstance(parent, basestring):
+            parent = self.stringToMObject(parent)
+
+        if parent:
+            return self.fnDagNode.hasParent(parent)
+        else:
+            return False
+
+    def hasChild(self, child):
+        if isinstance(child, DependencyNode):
+            child = child.mObject
+        elif isinstance(child, basestring):
+            child = self.stringToMObject(child)
+
+        if child:
+            return self.fnDagNode.hasChild(child)
+        else:
+            return False
+
+
+class Transform(DagNode):
+    @classmethod
+    def matrixToList(cls, matrix):
+        if isinstance(matrix, om.MTransformationMatrix):
+            matrix = matrix.asMatrix()
+
+        matrixList = []
+
+        for i in xrange(16):
+            matrixList.append(matrix[i])
+
+        return matrixList
+
+    def __init__(self, seed):
+        super(Transform, self).__init__(seed)
+
+    @property
+    def mFnType(self):
+        return om.MFn.kTransform, 'kTransform'
 
     @property
     def fnTransform(self):
@@ -632,21 +764,6 @@ class DagNode(DependencyNode):
     @property
     def worldMatrixList(self):
         return self.matrixToList(self.get('worldMatrix'))
-
-    @property
-    def metadata(self):
-        if self.fnDependencyNode.hasAttribute('metadata'):
-            return json.loads(self.metadata)
-        else:
-            return {}
-
-    @metadata.setter
-    def metadata(self, value):
-        # use json.dumps. Make this value a json dictionary
-        if 'metadata' not in cmds.listAttr(self.name):
-            cmds.addAttr(self.name, longName='metadata', dataType='string')
-
-        cmds.setAttr(self.name + '.metadata', json.dumps(value), type='string')
 
     @property
     def longAxis(self):
@@ -691,91 +808,6 @@ class DagNode(DependencyNode):
         except RuntimeError:
             # no shape
             return None
-
-    @classmethod
-    def matrixToList(cls, matrix):
-        if isinstance(matrix, om.MTransformationMatrix):
-            matrix = matrix.asMatrix()
-
-        matrixList = []
-
-        for i in xrange(16):
-            matrixList.append(matrix[i])
-
-        return matrixList
-
-    @classmethod
-    def makeShortNameUnique(cls, name):
-        _itDag = om.MItDag(om.MItDag.kDepthFirst, om.MFn.kTransform)
-        _dag = om.MDagPath()
-        _numDuplicates = 0
-        _possibleName = name
-
-        while not _itDag.isDone():
-            if _numDuplicates:
-                _possibleName = '{0}{1}'.format(name, _numDuplicates)
-            if _itDag.partialPathName() == _possibleName:
-                _numDuplicates += 1
-            _itDag.next()
-
-        if _numDuplicates:
-            return '{0}{1}'.format(name, _numDuplicates)
-        else:
-            return name
-
-    def hasParent(self, parent):
-        if isinstance(parent, DependencyNode):
-            parent = parent.mObject
-        elif isinstance(parent, basestring):
-            parent = self.stringToMObject(parent)
-
-        if parent:
-            return self.fnDagNode.hasParent(parent)
-        else:
-            return False
-
-    def hasChild(self, child):
-        if isinstance(child, DependencyNode):
-            child = child.mObject
-        elif isinstance(child, basestring):
-            child = self.stringToMObject(child)
-
-        if child:
-            return self.fnDagNode.hasChild(child)
-        else:
-            return False
-
-    def lockAttr(self, attr):
-        if self.fnDependencyNode.hasAttribute(attr):
-            plug = self.findPlug(attr)
-            plug.setLocked(True)
-
-    def unlockAttr(self, attr):
-        if self.fnDependencyNode.hasAttribute(attr):
-            plug = self.findPlug(attr)
-            plug.setLocked(False)
-
-    def hideAttr(self, attr):
-        if self.fnDependencyNode.hasAttribute(attr):
-            plug = self.findPlug(attr)
-            plug.setKeyable(False)
-
-    def unhideAttr(self, attr):
-        if self.fnDependencyNode.hasAttribute(attr):
-            plug = self.findPlug(attr)
-            plug.setKeyable(True)
-
-    def lockTransforms(self):
-        # This is not undoable
-        for attr in ['translate', 'rotate', 'scale']:
-            for axis in ['X', 'Y', 'Z']:
-                self.lockAttr(attr + axis)
-
-    def unlockTransforms(self):
-        # This is not undoable
-        for attr in ['translate', 'rotate', 'scale']:
-            for axis in ['X', 'Y', 'Z']:
-                self.unlockAttr(attr + axis)
 
     def _constrainTo(self, parent, constraintType):
         offsetParentMatrixPlug = self.findPlug('offsetParentMatrix')
@@ -904,24 +936,37 @@ class DagNode(DependencyNode):
             aimMatrixNode.set('secondaryInputAxisZ', upVector[2])
 
 
+    def lockTransforms(self):
+        # This is not undoable
+        for attr in ['translate', 'rotate', 'scale']:
+            for axis in ['X', 'Y', 'Z']:
+                self.lockAttr(attr + axis)
+
+    def unlockTransforms(self):
+        # This is not undoable
+        for attr in ['translate', 'rotate', 'scale']:
+            for axis in ['X', 'Y', 'Z']:
+                self.unlockAttr(attr + axis)
+
+
 class Shape(DagNode):
     def __init__(self, seed):
         super(Shape, self).__init__(seed)
 
-        # if not self.mObject.hasFn(om.MFn.kShape):  #     raise ValueError('\'{0}\' is not a subclass of Shape.'.format(self.fnDependencyNode.name()))
+    @property
+    def mFnType(self):
+        return om.MFn.kShape, 'kShape'
 
     @property
     def transform(self):
         # return this shape's transform
         _dag = om.MDagPath(self.dagPath)
-        return DagNode(_dag.transform())
+        return Transform(_dag.transform())
 
 
 class Mesh(Shape):
     def __init__(self, seed):
         super(Mesh, self).__init__(seed)
-
-        # if not self.mObject.hasFn(om.MFn.kMesh):  #     raise ValueError('\'{0}\' is not a subclass of Mesh.'.format(self.fnDependencyNode.name()))
 
     @classmethod
     def getVertexNeighbors(cls, dag, components):
@@ -1057,6 +1102,22 @@ class Mesh(Shape):
 
         return meshMObject
 
+    @property
+    def mFnType(self):
+        return om.MFn.kMesh, 'kMesh'
+
+    def getVertexColors(self):
+        if self.fnMesh.numColorSets:
+            return self.fnMesh.getVertexColors(self.fnMesh.currentColorSetName())
+        else:
+            return None
+
+    def setVertexColors(self, colors, vertexIds):
+        if self.fnMesh.numColorSets:
+            self.fnMesh.setVertexColors(colors, vertexIds, DAG_MODIFIER)
+
+        DAG_MODIFIER.doIt()
+
     def projectOnto(self, targetMesh, projectFromNormal=False):
         '''Returns the vertex id map and the corresponding position mapping between the own and target mesh.
         Does a world space closestPoint OR closestIntersection projection of the target mesh onto the own mesh.
@@ -1103,7 +1164,7 @@ class Mesh(Shape):
             else:
                 closestPoint, closestFaceIndex = targetFnMesh.getClosestPoint(vertexPosition)
 
-            closestDistance = 1000.0
+            closestDistance = INFINITY
             closestVertexId = 0
             numFaceVertices = faceVertexCounts[closestFaceIndex]
             closestVertexPosition = ORIGIN_POINT
@@ -1153,7 +1214,7 @@ class Mesh(Shape):
 
             raySource = om.MFloatPoint(facePosition.x, facePosition.y, facePosition.z)
             rayDirection = om.MFloatVector(faceNormal.x, faceNormal.y, faceNormal.z)
-            maxDistance = 10.0
+            maxDistance = 1.0
             testBothDirections = False
             # returns closestPoint, hitRayParam, closestFaceIndex, hitTriangle, hitBary1, hitBary2
             hitResults = targetFnMesh.closestIntersection(raySource, rayDirection, om.MSpace.kWorld, maxDistance,
@@ -1195,31 +1256,6 @@ class Mesh(Shape):
             return True, facesInsideMesh
         else:
             return False, facesInsideMesh
-
-
-    '''
-    import mayanode
-    reload(mayanode)
-    x = mayanode.DagNode('pSphere1')
-    y = mayanode.DagNode('pCube1')
-    
-    print(y.shape.isInside(x.shape))
-    '''
-        
-
-    '''
-    import mayanode
-    reload(mayanode)
-    x = mayanode.DagNode('pCylinder1')
-    y = mayanode.DagNode('pPlane1')
-    
-    idMap, positionMap = x.shape.getClosestComponentMapping(x.shape, y.shape, closestAlongNormal=True)
-    
-    for points in positionMap:
-        mayanode.LinearCurve.create(points)
-
-
-    '''
 
     @property
     def fnMesh(self):
@@ -1282,8 +1318,6 @@ class Curve(DagNode):
     def __init__(self, seed):
         super(Curve, self).__init__(seed)
 
-        # if not self.mObject.hasFn(om.MFn.kNurbsCurve):  #     raise ValueError('\'{0}\' is not a subclass of Curve.'.format(self.fnDependencyNode.name()))
-
     @classmethod
     def fitCurveToPoints(cls, points, name='fitCurve'):
         # TODO: do this with MDGModifier
@@ -1292,6 +1326,10 @@ class Curve(DagNode):
         cmds.delete(linearCurve)
 
         return Curve(fitCurve)
+
+    @property
+    def mFnType(self):
+        return om.MFn.kNurbsCurve, 'kNurbsCurve'
 
     @property
     def fnNurbsCurve(self):
@@ -1343,7 +1381,9 @@ class LinearCurve(Curve):
     def __init__(self, seed):
         super(LinearCurve, self).__init__(seed)
 
-        # if not self.shape.mObject.hasFn(om.MFn.kNurbsCurve):  #     raise ValueError('\'{0}\' is not a subclass of Curve.'.format(self.fnDependencyNode.name()))
+    @property
+    def mFnType(self):
+        return om.MFn.kNurbsCurve, 'kNurbsCurve'
 
     @classmethod
     def create(cls, points=(), forceCvCount=False):
@@ -1397,8 +1437,6 @@ class LinearCurve(Curve):
 class SkinCluster(DependencyNode):
     def __init__(self, seed):
         super(SkinCluster, self).__init__(seed)
-
-        # if not self.mObject.hasFn(om.MFn.kSkinClusterFilter):  #     raise ValueError('\'{0}\' is not a SkinCluster type object..'.format(self.fnDependencyNode.name()))
 
     @classmethod
     def pruneVertexWeightList(cls, weights, influenceCount, maxInfluence=4, normalize=True):
@@ -1521,7 +1559,7 @@ class SkinCluster(DependencyNode):
             cmds.select(self.outputGeometry.dagPath.fullPathName())
 
         _dag, selectedComponents = Scene.getSelectedVertexIDs()
-        meshTransform = DagNode(_dag.node())
+        meshTransform = Transform(_dag.node())
 
         oldWeights = self.getWeights(components=selectedComponents)
 
@@ -1562,7 +1600,7 @@ class SkinCluster(DependencyNode):
 
         for k in xrange(iterations):
             _dag, selectedComponents = Scene.getSelectedVertexIDs()
-            meshTransform = DagNode(_dag.node())
+            meshTransform = Transform(_dag.node())
 
             neighborVertexComponents = Mesh.getVertexNeighbors(_dag, selectedComponents) if selectedComponents else None
 
@@ -1727,4 +1765,16 @@ class Shader(DependencyNode):
             return self.get(textureSlotName)
 
 # TODO: create a constraint type
+
+#########################
+# PLUGINS AND COMMANDS  #
+#########################
+
+# SET ATTR
+
+
+
+
+# CONNECT ATTR
+
 
