@@ -54,7 +54,8 @@ class SetMayanodeAttr(om.MPxCommand):
         attributeMObj = self.plug.attribute()
         fnAttr = om.MFnAttribute(attributeMObj)
         if fnAttr.affectsWorldSpace:
-            self.modifier = om.MDagModifier()
+            self.modifier = om.MDGModifier()
+            # self.modifier = om.MDagModifier()
         else:
             self.modifier = om.MDGModifier()
 

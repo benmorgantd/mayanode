@@ -105,9 +105,7 @@ class Scene(object):
             faceIter = om.MItMeshPolygon(dag, selectedComponents)
             while not faceIter.isDone():
                 connectedVertices = faceIter.getVertices()
-                for vert in connectedVertices:
-                    vertexConversion.add(vert)
-
+                vertexConversion.update(connectedVertices)
                 faceIter.next()
         elif selectedComponents.apiType() == om.MFn.kInvalid:
             # no selected components. A transform might only be selected
@@ -115,12 +113,10 @@ class Scene(object):
             _dag.extendToShape(0)
             # check what the shape's type is
             _shapeMObj = _dag.node()
-            if _shapeMObj.hasFn(om.MFn.kShape):
+            if _shapeMObj.hasFn(om.MFn.kMesh):
                 _mesh = Mesh(_shapeMObj)
                 if not _mesh.fnDagNode.isIntermediateObject:
-                    # get the vertices on the mesh
-                    for i in xrange(_mesh.fnMesh.numVertices):
-                        vertexConversion.add(i)
+                    vertexConversion.update(xrange(_mesh.fnMesh.numVertices))
             else:
                 return
 
@@ -192,26 +188,22 @@ class DependencyNode(object):
 
     @classmethod
     def connect(cls, sourcePlug, destPlug, force=True):
-        cmds.connectMayanodeAttr(sourcePlug.name(), destPlug.name(), forceConnection=force)
+        assert isinstance(sourcePlug, om.MPlug)
+        assert isinstance(destPlug, om.MPlug)
 
-        #
-        # _sourceFnAttr = om.MFnAttribute(sourcePlug.attribute())
-        # _destFnAttr = om.MFnAttribute(destPlug.attribute())
-        #
-        # if not _sourceFnAttr.connectable or not _destFnAttr.connectable:
-        #     raise ValueError('A given plug is not connectable.')
-        # elif not _destFnAttr.writable:
-        #     raise ValueError('The destination plug is not writable.')
-        #
-        # existingDestPlugConnection = destPlug.source()
-        # if force and not existingDestPlugConnection.isNull:
-        #     DG_MODIFIER.disconnect(existingDestPlugConnection, destPlug)
-        #
-        # DG_MODIFIER.connect(sourcePlug, destPlug)
-        # DG_MODIFIER.doIt()
+        if sourcePlug.isNull or destPlug.isNull:
+            raise ValueError('Cannot make connection as one of the given plugs is null.')
+
+        cmds.connectMayanodeAttr(sourcePlug.name(), destPlug.name(), forceConnection=force)
 
     @classmethod
     def disconnect(cls, sourcePlug, destPlug):
+        assert isinstance(sourcePlug, om.MPlug)
+        assert isinstance(destPlug, om.MPlug)
+
+        if sourcePlug.isNull or destPlug.isNull:
+            raise ValueError('Cannot make disconnection as one of the given plugs is null.')
+
         DG_MODIFIER.disconnect(sourcePlug, destPlug)
         DG_MODIFIER.doIt()
 
@@ -507,6 +499,8 @@ class DependencyNode(object):
             itDG.next()
 
         nodes = []
+
+        # TODO: Create a fn that will create the right mayanode type from a given mObject
         for mObject in nodeMObjects:
             if mObject.hasFn(om.MFn.kTransform):
                 nodes.append(Transform(mObject))
@@ -850,12 +844,15 @@ class Transform(DagNode):
         if maintainOffset:
             _previousPosition = self.worldPosition
             _previousRotation = self.worldRotation  # TODO: maintain scale offset
-
-        self._constrainTo(parent, 'parent')
+        
+        constraintPickMatrix = ParentConstraint.create(parent, [self])
+        constraint = ParentConstraint(constraintPickMatrix.mObject)
 
         if maintainOffset:
             self.worldPosition = _previousPosition
             self.worldRotation = _previousRotation
+
+        return constraint
 
     def pointConstrainTo(self, parent, maintainOffset=False):
         if maintainOffset:
@@ -1276,7 +1273,7 @@ class Mesh(Shape):
     def getShaders(self):
         '''Returns the per-polygon shader assignment for this instance of the mesh'''
 
-        shaderGroupMObjects, polygonToShaderMapping = self.shape.fnMesh.getConnectedShaders(0)
+        shaderGroupMObjects, polygonToShaderMapping = self.fnMesh.getConnectedShaders(0)
 
         shaderGroups = []
         shaders = []
@@ -1293,7 +1290,7 @@ class Mesh(Shape):
 
     def assignMaterial(self, material):
         # TODO: create a Material node type
-        instObjectGroupsPlug = self.shape.findPlug('instObjGroups')
+        instObjectGroupsPlug = self.findPlug('instObjGroups')
         instObjectGroupsPlug = instObjectGroupsPlug.elementByLogicalIndex(0)
         if instObjectGroupsPlug.isConnected:
             # Destinations skips over unit conversion nodes. Neat
@@ -1301,8 +1298,8 @@ class Mesh(Shape):
             for plug in connectedPlugs:
                 shaderGroup = plug.node()
                 shaderGroupSet = om.MFnSet(shaderGroup)
-                if shaderGroupSet.isMember(self.shape.mObject):
-                    shaderGroupSet.removeMember(self.shape.mObject)
+                if shaderGroupSet.isMember(self.mObject):
+                    shaderGroupSet.removeMember(self.mObject)
 
         material = Shader(material)
         shaderGroupMObject = material.shaderGroup
@@ -1311,7 +1308,7 @@ class Mesh(Shape):
             raise RuntimeError('The requested material {0} is not connected to a shader group.'.format(material))
 
         shadingGroupSet = om.MFnSet(shaderGroupMObject)
-        shadingGroupSet.addMember(self.shape.mObject)
+        shadingGroupSet.addMember(self.mObject)
 
 
 class Curve(DagNode):
@@ -1467,8 +1464,8 @@ class SkinCluster(DependencyNode):
 
     @property
     def outputGeometry(self):
-        outputGeometryArrayPlug = self.findPlug('outputGeometry')
-        outputGeometryPlug = outputGeometryArrayPlug.elementByPhysicalIndex(0)
+        outputGeometryPlug = self.findPlug('outputGeometry')
+        # outputGeometryPlug = outputGeometryArrayPlug.elementByLogicalIndex(0)
         connectedMeshes = outputGeometryPlug.connectedTo(False, True)
         # return the first connected mesh
         return Mesh(connectedMeshes[0].node())
@@ -1509,7 +1506,6 @@ class SkinCluster(DependencyNode):
         _outputGeometryDag = self.outputGeometry.dagPath
         _influenceIndices = self.influenceIndices
 
-        # fails at Mesh.dagPath
         _weights = self.fnSkinCluster.getWeights(_outputGeometryDag, components, _influenceIndices)
 
         return _weights
@@ -1559,7 +1555,6 @@ class SkinCluster(DependencyNode):
             cmds.select(self.outputGeometry.dagPath.fullPathName())
 
         _dag, selectedComponents = Scene.getSelectedVertexIDs()
-        meshTransform = Transform(_dag.node())
 
         oldWeights = self.getWeights(components=selectedComponents)
 
@@ -1567,7 +1562,7 @@ class SkinCluster(DependencyNode):
         newWeights = om.MDoubleArray(oldWeights)
 
         # iterate over the selected verts
-        itVerts = om.MItMeshVertex(meshTransform.dagPath, selectedComponents)
+        itVerts = om.MItMeshVertex(_dag, selectedComponents)
         i = 0
         numOverInfluenced = 0
         infCount = self.influenceCount
@@ -1593,54 +1588,50 @@ class SkinCluster(DependencyNode):
         om.MGlobal.setActiveSelectionList(originalSel)
 
         om.MGlobal.displayInfo(
-            'Pruned {0} over-influenced vertices from {1}.'.format(numOverInfluenced, meshTransform.shortName))
+            'Pruned {0} over-influenced vertices from {1}.'.format(numOverInfluenced, _dag.partialPathName()))
 
-    def smoothWeights(self, iterations=3):
-        originalSel = om.MGlobal.getActiveSelectionList()
+    def smoothWeights(self, iterations=3, pinBorderVerts=False):
+        oldWeights = self.getWeights()
+        newWeights = oldWeights
 
-        for k in xrange(iterations):
-            _dag, selectedComponents = Scene.getSelectedVertexIDs()
-            meshTransform = Transform(_dag.node())
+        _dag, selectedComponents = Scene.getSelectedVertexIDs()
+        numInfluences = self.influenceCount
 
-            neighborVertexComponents = Mesh.getVertexNeighbors(_dag, selectedComponents) if selectedComponents else None
-
+        for iteration in xrange(iterations):
             # TODO: find a way to do this more efficiently, maybe be precaching neighbor verts
-            # we need to get weights on all vertices so that we have neighbors
-            # oldWeights = self.getWeights(components=neighborVertexComponents) if neighborVertexComponents else self.getWeights()
-            # get weights on everything for now because it is much simpler
-            oldWeights = self.getWeights()
-
             # newWeights just starts as a copy of oldWeights
             newWeights = list(om.MDoubleArray(oldWeights))
 
             # iterate over the selected verts
-            itVerts = om.MItMeshVertex(meshTransform.dagPath, selectedComponents)
-            numInfluences = self.influenceCount
+            itVerts = om.MItMeshVertex(_dag, selectedComponents)
 
             while not itVerts.isDone():
-                neighborVerts = itVerts.getConnectedVertices()
-                neighborWeightSums = [0.0] * numInfluences
-                numNeighbors = len(neighborVerts)
-                vertId = itVerts.index()
+                if pinBorderVerts and itVerts.onBoundary():
+                    itVerts.next()
+                else:
+                    neighborVerts = itVerts.getConnectedVertices()
+                    neighborWeightSums = [0.0] * numInfluences
+                    numNeighbors = len(neighborVerts)
+                    vertId = itVerts.index()
 
-                # TODO: see if there's a way to get rid of this nested for loop
-                for i in xrange(numNeighbors):
-                    v = neighborVerts[i]
-                    # get these vertex's weights and add them to our weight sums
-                    for j in xrange(numInfluences):
-                        neighborWeightSums[j] += oldWeights[(v * numInfluences) + j]
+                    # TODO: see if there's a way to get rid of this nested for loop
+                    for i in xrange(numNeighbors):
+                        v = neighborVerts[i]
+                        # get these vertex's weights and add them to our weight sums
+                        for j in xrange(numInfluences):
+                            neighborWeightSums[j] += oldWeights[(v * numInfluences) + j]
 
-                smoothedWeight = [w / float(numNeighbors) for w in neighborWeightSums]
-                weightSum = float(sum(smoothedWeight))
-                normalizedWeight = [w / weightSum for w in smoothedWeight]
+                    smoothedWeight = [w / float(numNeighbors) for w in neighborWeightSums]
+                    weightSum = float(sum(smoothedWeight))
+                    normalizedWeight = [w / float(weightSum) for w in smoothedWeight]
 
-                newWeights[(vertId * numInfluences): (vertId * numInfluences) + numInfluences] = normalizedWeight
+                    newWeights[(vertId * numInfluences): (vertId * numInfluences) + numInfluences] = normalizedWeight
 
-                itVerts.next()
+                    itVerts.next()
 
-            self.setWeights(newWeights)
+            oldWeights = newWeights
 
-        om.MGlobal.setActiveSelectionList(originalSel)
+        self.setWeights(newWeights)
 
 
 class ShaderGroup(DependencyNode):
@@ -1764,17 +1755,68 @@ class Shader(DependencyNode):
         else:
             return self.get(textureSlotName)
 
-# TODO: create a constraint type
 
-#########################
-# PLUGINS AND COMMANDS  #
-#########################
+class Constraint(DependencyNode):
+    def __init__(self, seed):
+        super(Constraint, self).__init__(seed)
 
-# SET ATTR
+        self.initialized = False
+        self.parent = None
+        self.children = None
+        self.pickMatrix = None
+
+    @property
+    def constraintType(self):
+        raise NotImplementedError()
+
+    def create(self, parent, children):
+        raise NotImplementedError()
 
 
+class ParentConstraint(Constraint):
+    # TODO: improve the process of creating a constraint
+    '''
+    constraint = ParentConstraint(parent, child/children)
+    - would need to be able to create a ParentConstraint from its init (so no seed)
+    - OR the syntax could stay: constraint = parent.parentConstrainTo(child/children)
+      - that fn could take care of the object's creation.
 
+    '''
+    def __init__(self, seed):
+        super(ParentConstraint, self).__init__(seed)
 
-# CONNECT ATTR
+    @property
+    def constraintType(self):
+        return 'parent'
 
+    @classmethod
+    def create(cls, parent, children):
+        # TODO: type checks
+        if isinstance(children, Transform):
+            children = [children]
 
+        for child in children:
+            offsetParentMatrixPlug = child.findPlug('offsetParentMatrix')
+            existingPickMatrix = None
+
+            # Check if we're already constrained to this parent
+            if child.isNodeUpstream(offsetParentMatrixPlug, parent.mObject):
+                existingPickMatrixNodes = child.findUpstreamNodesOfType(om.MFn.kPickMatrix,
+                                                                        sourcePlug=offsetParentMatrixPlug)
+                if existingPickMatrix:
+                    # Make sure the DG Modifier's queue is empty before calling delete node.
+                    for pickMatrixNode in existingPickMatrixNodes:
+                        DG_MODIFIER.doIt()
+                        DG_MODIFIER.deleteNode(pickMatrixNode.mObject)
+                        DG_MODIFIER.doIt()
+
+            pickMatrix = DependencyNode(Scene.createNode('pickMatrix', child + '_pickMatrix'))
+
+            for matrixPart in PICK_MATRIX_PARTS:
+                pickMatrix.set(matrixPart, not bool(matrixPart in CONSTRAINT_TYPE_USAGES['parent'].keys()))
+            else:
+                parent.connect(parent.findPlug('matrix'), pickMatrix.findPlug('inputMatrix'))
+                pickMatrix.connect(pickMatrix.findPlug('outputMatrix'), child.findPlug('offsetParentMatrix'))
+
+        # TODO: return type... return only one pick matrix node for all children?
+        return pickMatrix

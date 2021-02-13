@@ -73,10 +73,8 @@ class ConnectMayanodeAttr(om.MPxCommand):
             self.displayError('{} is not writable'.format(self.destPlug.name()))
             return
 
-        if sourceFnAttr.affectsWorldSpace or destFnAttr.affectsWorldSpace:
-            self.modifier = om.MDagModifier()
-        else:
-            self.modifier = om.MDGModifier()
+        # Create a new MDGModifier for this action
+        self.modifier = om.MDGModifier()
 
         self.redoIt()
 
