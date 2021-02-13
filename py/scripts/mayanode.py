@@ -129,6 +129,30 @@ class Scene(object):
         return dag, selectedComponents
 
     @classmethod
+    def getSelectedVertexIDsWithNeighbors(cls, dag=None, components=None):
+        if not dag or not components:
+            sel = om.MGlobal.getActiveSelectionList()
+            dag, components = sel.getComponent(0)
+
+        itVerts = om.MItMeshVertex(dag, components)
+        neighboringVerts = set()
+
+        while not itVerts.isDone():
+            neighboringVerts.add(itVerts.index())
+            neighbors = itVerts.getConnectedVertices()
+            for neighbor in neighbors:
+                neighboringVerts.add(neighbor)
+            itVerts.next()
+
+        sel = om.MSelectionList()
+        for vertId in neighboringVerts:
+            sel.add(dag.fullPathName() + '.vtx[{0}]'.format(vertId))
+
+        dag, neighboringVertices = sel.getComponent(0)
+
+        return dag, neighboringVertices
+
+    @classmethod
     def getTypesFromSelection(cls):
         sel = om.MGlobal.getActiveSelectionList()
 
@@ -975,8 +999,7 @@ class Mesh(Shape):
         while not itVerts.isDone():
             neighboringVerts.add(itVerts.index())
             neighbors = itVerts.getConnectedVertices()
-            for neighbor in neighbors:
-                neighboringVerts.add(neighbor)
+            neighboringVerts.update(neighbors)
             itVerts.next()
 
         sel = om.MSelectionList()
@@ -1590,48 +1613,59 @@ class SkinCluster(DependencyNode):
         om.MGlobal.displayInfo(
             'Pruned {0} over-influenced vertices from {1}.'.format(numOverInfluenced, _dag.partialPathName()))
 
-    def smoothWeights(self, iterations=3, pinBorderVerts=False):
-        oldWeights = self.getWeights()
-        newWeights = oldWeights
+    def smoothWeights(self, pinBorderVerts=False):
 
         _dag, selectedComponents = Scene.getSelectedVertexIDs()
+        _dag, selectedComponentsWithNeighbors = Scene.getSelectedVertexIDsWithNeighbors(dag=_dag, components=selectedComponents)
         numInfluences = self.influenceCount
 
-        for iteration in xrange(iterations):
-            # TODO: find a way to do this more efficiently, maybe be precaching neighbor verts
-            # newWeights just starts as a copy of oldWeights
-            newWeights = list(om.MDoubleArray(oldWeights))
+        oldWeights = self.getWeights(components=selectedComponentsWithNeighbors)
 
-            # iterate over the selected verts
-            itVerts = om.MItMeshVertex(_dag, selectedComponents)
+        vertIdToWeightListIndexMap = {}
+        # Quickly create a mapping between the weights and their vertex id
+        itVerts = om.MItMeshVertex(_dag, selectedComponentsWithNeighbors)
+        weightListId = 0
+        while not itVerts.isDone():
+            vertId = itVerts.index()
+            vertIdToWeightListIndexMap[int(vertId)] = weightListId
+            weightListId += 1
 
-            while not itVerts.isDone():
-                if pinBorderVerts and itVerts.onBoundary():
-                    itVerts.next()
-                else:
-                    neighborVerts = itVerts.getConnectedVertices()
-                    neighborWeightSums = [0.0] * numInfluences
-                    numNeighbors = len(neighborVerts)
-                    vertId = itVerts.index()
+            itVerts.next()
 
-                    # TODO: see if there's a way to get rid of this nested for loop
-                    for i in xrange(numNeighbors):
-                        v = neighborVerts[i]
-                        # get these vertex's weights and add them to our weight sums
-                        for j in xrange(numInfluences):
-                            neighborWeightSums[j] += oldWeights[(v * numInfluences) + j]
+        # newWeights just starts as a copy of oldWeights
+        newWeights = list(om.MDoubleArray(oldWeights))
 
-                    smoothedWeight = [w / float(numNeighbors) for w in neighborWeightSums]
-                    weightSum = float(sum(smoothedWeight))
-                    normalizedWeight = [w / float(weightSum) for w in smoothedWeight]
+        # iterate over the selected verts
+        itVerts = om.MItMeshVertex(_dag, selectedComponents)
 
-                    newWeights[(vertId * numInfluences): (vertId * numInfluences) + numInfluences] = normalizedWeight
+        weightListId = 0
 
-                    itVerts.next()
+        while not itVerts.isDone():
+            if pinBorderVerts and itVerts.onBoundary():
+                itVerts.next()
+            else:
+                neighborVerts = itVerts.getConnectedVertices()
+                neighborWeightSums = [0.0] * numInfluences
+                numNeighbors = len(neighborVerts)
 
-            oldWeights = newWeights
+                for i in xrange(numNeighbors):
+                    neighborVertexIndex = neighborVerts[i]
+                    neighborWeightIndex = vertIdToWeightListIndexMap[neighborVertexIndex]
+                    # get these vertex's weights and add them to our weight sums
+                    for j in xrange(numInfluences):
+                        neighborWeightSums[j] += oldWeights[(neighborWeightIndex * numInfluences) + j]
 
-        self.setWeights(newWeights)
+                smoothedWeight = [w / float(numNeighbors) for w in neighborWeightSums]
+                weightSum = float(sum(smoothedWeight))
+                normalizedWeight = [w / float(weightSum) for w in smoothedWeight]
+
+                newWeights[(weightListId * numInfluences): (weightListId * numInfluences) + numInfluences] = normalizedWeight
+
+                weightListId += 1
+
+                itVerts.next()
+
+        self.setWeights(newWeights, components=selectedComponents)
 
 
 class ShaderGroup(DependencyNode):

@@ -10,11 +10,11 @@ def maya_useNewAPI():
 class SmoothSkinWeights(om.MPxCommand):
     COMMAND_NAME = 'bmSmoothSkinWeights'
     undoQueue = []
-    iterations = 3
     dagPath = om.MDagPath()
     selectedComponents = om.MObject()
+    selectedComponentsWithNeighbors = om.MObject()
     pinBorderVerts = False
-    pruneWeightsBelow = 0.005
+    # pruneWeightsBelow = 0.005
 
     def __init__(self):
         super(SmoothSkinWeights, self).__init__()
@@ -31,11 +31,32 @@ class SmoothSkinWeights(om.MPxCommand):
     def syntax(cls):
         _syntax = om.MSyntax()
         # optionally pass the number of iterations
-        _syntax.addFlag('i', 'iterations', om.MSyntax.kLong)
+        # _syntax.addFlag('i', 'iterations', om.MSyntax.kLong)
         _syntax.addFlag('pin', 'pinBorderVerts', om.MSyntax.kBoolean)
-        _syntax.addFlag('pwb', 'pruneWeightsBelow', om.MSyntax.kDouble)
+        # _syntax.addFlag('pwb', 'pruneWeightsBelow', om.MSyntax.kDouble)
 
         return _syntax
+
+    @classmethod
+    def getVertexNeighbors(cls, dag, components):
+        # also returns itself
+
+        itVerts = om.MItMeshVertex(dag, components)
+        neighboringVerts = set()
+
+        while not itVerts.isDone():
+            neighboringVerts.add(itVerts.index())
+            neighbors = itVerts.getConnectedVertices()
+            neighboringVerts.update(neighbors)
+            itVerts.next()
+
+        sel = om.MSelectionList()
+        for vertId in neighboringVerts:
+            sel.add(dag.fullPathName() + '.vtx[{0}]'.format(vertId))
+
+        dag, neighboringVertices = sel.getComponent(0)
+
+        return neighboringVertices
 
     @classmethod
     def getSelectedVertexIDs(cls):
@@ -113,23 +134,24 @@ class SmoothSkinWeights(om.MPxCommand):
         # gather the values from args
         argParser = om.MArgParser(self.syntax(), args)
 
-        if argParser.isFlagSet('iterations'):
-            self.iterations = int(argParser.flagArgumentInt('iterations', 0))
-        if argParser.isFlagSet('i'):
-            self.iterations = int(argParser.flagArgumentInt('i', 0))
+        # if argParser.isFlagSet('iterations'):
+        #     self.iterations = int(argParser.flagArgumentInt('iterations', 0))
+        # if argParser.isFlagSet('i'):
+        #     self.iterations = int(argParser.flagArgumentInt('i', 0))
 
         if argParser.isFlagSet('pinBorderVerts'):
             self.pinBorderVerts = argParser.flagArgumentBool('pinBorderVerts', 0)
         if argParser.isFlagSet('pin'):
             self.pinBorderVerts = argParser.flagArgumentBool('pin', 0)
 
-        if argParser.isFlagSet('pruneWeightsBelow'):
-            self.pruneWeightsBelow = args.flagArgumentDouble('pruneWeightsBelow', 0)
-        if argParser.isFlagSet('pwb'):
-            self.pruneWeightsBelow = args.flagArgumentDouble('pwb', 0)
+        # if argParser.isFlagSet('pruneWeightsBelow'):
+        #     self.pruneWeightsBelow = args.flagArgumentDouble('pruneWeightsBelow', 0)
+        # if argParser.isFlagSet('pwb'):
+        #     self.pruneWeightsBelow = args.flagArgumentDouble('pwb', 0)
 
         # get the selected components
         self.dagPath, self.selectedComponents = self.getSelectedVertexIDs()
+        self.selectedComponentsWithNeighbors = self.getVertexNeighbors(self.dagPath, self.selectedComponents)
 
         if not self.dagPath.node().hasFn(om.MFn.kMesh):
             om.MGlobal.displayError('The given object {} is not a mesh shape.'.format(self.dagPath.partialPathName()))
@@ -153,63 +175,66 @@ class SmoothSkinWeights(om.MPxCommand):
         for influence in xrange(numInfluences):
             influenceIndices.append(influence)
 
-        emptyComponent = om.MObject()
         # for the starting weights, we need to get weights on every vertex so we have neighbors
-        originalWeights = fnSkinCluster.getWeights(self.dagPath, emptyComponent, influenceIndices)
+        # originalWeights = fnSkinCluster.getWeights(self.dagPath, emptyComponent, influenceIndices)
+        # make the original weights just hte selected components and its neighbor weights
+        originalWeights = fnSkinCluster.getWeights(self.dagPath, self.selectedComponentsWithNeighbors, influenceIndices)
         oldWeights = om.MDoubleArray(originalWeights)
-        newWeights = oldWeights
 
-        for iteration in xrange(self.iterations):
-            # newWeights just starts as a copy of oldWeights
-            newWeights = list(om.MDoubleArray(oldWeights))
+        vertIdToWeightListIndexMap = {}
+        # Quickly create a mapping between the weights and their vertex id
+        itVerts = om.MItMeshVertex(self.dagPath, self.selectedComponentsWithNeighbors)
 
-            # iterate over the selected verts
-            itVerts = om.MItMeshVertex(self.dagPath, self.selectedComponents)
+        weightListId = 0
+        while not itVerts.isDone():
+            vertIdToWeightListIndexMap[int(itVerts.index())] = weightListId
+            weightListId += 1
 
-            while not itVerts.isDone():
-                isBoundaryVertex = itVerts.onBoundary()
-                # option to skip evaluation on boundary vertices
-                if self.pinBorderVerts and isBoundaryVertex:
-                    itVerts.next()
-                else:
-                    neighborVerts = itVerts.getConnectedVertices()
-                    neighborWeightSums = [0.0] * numInfluences
-                    numNeighbors = len(neighborVerts)
-                    vertId = itVerts.index()
+            itVerts.next()
 
-                    for i in xrange(numNeighbors):
-                        v = neighborVerts[i]
-                        # get these vertex's weights and add them to our weight sums
-                        for j in xrange(numInfluences):
-                            neighborWeightSums[j] += oldWeights[(v * numInfluences) + j]
+        # newWeights just starts as a copy of oldWeights
+        newWeights = list(om.MDoubleArray(oldWeights))
 
-                    smoothedWeights = [w / float(numNeighbors) for w in neighborWeightSums]
-                    weightSum = float(sum(smoothedWeights))
+        # iterate over the selected verts
+        itVerts = om.MItMeshVertex(self.dagPath, self.selectedComponents)
 
-                    normalizedWeights = [0.0] * numInfluences
-                    for smoothWeightIndex in xrange(numInfluences):
-                        n = smoothedWeights[smoothWeightIndex] / weightSum
-                        if n > self.pruneWeightsBelow:
-                            normalizedWeights[smoothWeightIndex] = n
-                        # otherwise it will stay at 0.0
+        weightListId = 0
 
-                    # normalizedWeight = [w / float(weightSum) for w in smoothedWeight]
+        while not itVerts.isDone():
+            isBoundaryVertex = itVerts.onBoundary()
+            # option to skip evaluation on boundary vertices
+            if self.pinBorderVerts and isBoundaryVertex:
+                itVerts.next()
+            else:
+                neighborVerts = itVerts.getConnectedVertices()
+                neighborWeightSums = [0.0] * numInfluences
+                numNeighbors = len(neighborVerts)
+                # When trying to smooth weights on just a subset of vertices, we need a way to
+                # match a vertex's neighbor vert id to that neighbor vertex's weight list index.
+                for i in xrange(numNeighbors):
+                    neighborVertexIndex = neighborVerts[i]
+                    neighborWeightIndex = vertIdToWeightListIndexMap[neighborVertexIndex]
+                    # get these vertex's weights and add them to our weight sums
+                    for j in xrange(numInfluences):
+                        neighborWeightSums[j] += oldWeights[(neighborWeightIndex * numInfluences) + j]
 
-                    newWeights[(vertId * numInfluences): (vertId * numInfluences) + numInfluences] = normalizedWeights
+                smoothedWeights = [w / float(numNeighbors) for w in neighborWeightSums]
+                weightSum = float(sum(smoothedWeights))
+                normalizedWeights = [w / weightSum for w in smoothedWeights]
 
-                    itVerts.next()
+                newWeights[(weightListId * numInfluences): (weightListId * numInfluences) + numInfluences] = normalizedWeights
 
-            # instead of setting/getting the skin cluster weights each iteration, we just need to set this variable
-            oldWeights = newWeights
+                weightListId += 1
+
+                itVerts.next()
 
         newWeightsDoubleArray = om.MDoubleArray()
         for w in newWeights:
             newWeightsDoubleArray.append(w)
 
-        # TODO: only set weights on the passed components
-        fnSkinCluster.setWeights(self.dagPath, emptyComponent, influenceIndices, newWeightsDoubleArray)
+        fnSkinCluster.setWeights(self.dagPath, self.selectedComponents, influenceIndices, newWeightsDoubleArray)
 
-        self.undoQueue.append((skinClusterMObject, originalWeights, self.dagPath, influenceIndices))
+        self.undoQueue.append((skinClusterMObject, originalWeights, self.dagPath, influenceIndices, self.selectedComponentsWithNeighbors))
 
     def undoIt(self):
         if self.undoQueue:
@@ -217,8 +242,8 @@ class SmoothSkinWeights(om.MPxCommand):
             oldWeights = self.undoQueue[-1][1]
             meshDagPath = self.undoQueue[-1][2]
             influenceIndices = self.undoQueue[-1][3]
+            components = self.undoQueue[-1][4]
             # when undoing, we have to set weights on every component
-            components = om.MObject()
             fnSkinCluster.setWeights(meshDagPath, components, influenceIndices, oldWeights)
 
             self.undoQueue.pop(-1)
