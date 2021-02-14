@@ -14,6 +14,8 @@ class SmoothSkinWeights(om.MPxCommand):
     selectedComponents = om.MObject()
     selectedComponentsWithNeighbors = om.MObject()
     pinBorderVerts = False
+    vertexId = None
+    strength = 1.0
     # pruneWeightsBelow = 0.005
 
     def __init__(self):
@@ -34,6 +36,8 @@ class SmoothSkinWeights(om.MPxCommand):
         # _syntax.addFlag('i', 'iterations', om.MSyntax.kLong)
         _syntax.addFlag('pin', 'pinBorderVerts', om.MSyntax.kBoolean)
         # _syntax.addFlag('pwb', 'pruneWeightsBelow', om.MSyntax.kDouble)
+        _syntax.addFlag('v', 'vertexId', om.MSyntax.kLong)
+        _syntax.addFlag('s', 'strength', om.MSyntax.kDouble)
 
         return _syntax
 
@@ -57,6 +61,28 @@ class SmoothSkinWeights(om.MPxCommand):
         dag, neighboringVertices = sel.getComponent(0)
 
         return neighboringVertices
+
+    @classmethod
+    def getVertexComponentFromArg(cls, vertexId):
+        sel = om.MGlobal.getActiveSelectionList()
+        dag = sel.getDagPath(0)
+
+        component = None
+
+        # check what the shape's type is
+        # TODO: put this in a try/except if the transform has no shape
+        dag.extendToShape(0)
+        shapeMObj = dag.node()
+        if shapeMObj.hasFn(om.MFn.kMesh):
+            meshMFnDagNode = om.MFnDagNode(shapeMObj)
+            if not meshMFnDagNode.isIntermediateObject:
+                component = dag.fullPathName() + '.vtx[{0}]'.format(vertexId)
+
+        newSel = om.MSelectionList()
+        newSel.add(component)
+
+        dag, component = newSel.getComponent(0)
+        return dag, component
 
     @classmethod
     def getSelectedVertexIDs(cls):
@@ -144,13 +170,27 @@ class SmoothSkinWeights(om.MPxCommand):
         if argParser.isFlagSet('pin'):
             self.pinBorderVerts = argParser.flagArgumentBool('pin', 0)
 
+        if argParser.isFlagSet('vertexId'):
+            self.vertexId = argParser.flagArgumentInt('vertexId', 0)
+        if argParser.isFlagSet('v'):
+            self.vertexId = argParser.flagArgumentInt('v', 0)
+
+        if argParser.isFlagSet('strength'):
+            self.strength = argParser.flagArgumentDouble('strength', 0)
+        if argParser.isFlagSet('s'):
+            self.strength = argParser.flagArgumentDouble('s', 0)
+
         # if argParser.isFlagSet('pruneWeightsBelow'):
         #     self.pruneWeightsBelow = args.flagArgumentDouble('pruneWeightsBelow', 0)
         # if argParser.isFlagSet('pwb'):
         #     self.pruneWeightsBelow = args.flagArgumentDouble('pwb', 0)
 
         # get the selected components
-        self.dagPath, self.selectedComponents = self.getSelectedVertexIDs()
+        if self.vertexId is None:
+            self.dagPath, self.selectedComponents = self.getSelectedVertexIDs()
+        else:
+            self.dagPath, self.selectedComponents = self.getVertexComponentFromArg(self.vertexId)
+
         self.selectedComponentsWithNeighbors = self.getVertexNeighbors(self.dagPath, self.selectedComponents)
 
         if not self.dagPath.node().hasFn(om.MFn.kMesh):
@@ -219,8 +259,15 @@ class SmoothSkinWeights(om.MPxCommand):
                         neighborWeightSums[j] += oldWeights[(neighborWeightIndex * numInfluences) + j]
 
                 smoothedWeights = [w / float(numNeighbors) for w in neighborWeightSums]
-                weightSum = float(sum(smoothedWeights))
-                normalizedWeights = [w / weightSum for w in smoothedWeights]
+                strengthWeightedWeights = []
+
+                for weightIndex in xrange(len(smoothedWeights)):
+                    smoothedWeight = smoothedWeights[weightIndex]
+                    oldWeight = oldWeights[weightIndex]
+                    strengthWeightedWeights.append(oldWeight + (self.strength * (smoothedWeight - oldWeight)))
+
+                weightSum = float(sum(strengthWeightedWeights))
+                normalizedWeights = [w / float(weightSum) for w in strengthWeightedWeights]
 
                 newWeights[(weightListId * numInfluences): (weightListId * numInfluences) + numInfluences] = normalizedWeights
 
@@ -229,8 +276,9 @@ class SmoothSkinWeights(om.MPxCommand):
                 itVerts.next()
 
         newWeightsDoubleArray = om.MDoubleArray()
-        for w in newWeights:
-            newWeightsDoubleArray.append(w)
+        for weightIndex in xrange(len(newWeights)):
+            # make the final value weighted
+            newWeightsDoubleArray.append(newWeights[weightIndex])
 
         fnSkinCluster.setWeights(self.dagPath, self.selectedComponents, influenceIndices, newWeightsDoubleArray)
 
