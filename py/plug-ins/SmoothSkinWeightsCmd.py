@@ -160,11 +160,6 @@ class SmoothSkinWeights(om.MPxCommand):
         # gather the values from args
         argParser = om.MArgParser(self.syntax(), args)
 
-        # if argParser.isFlagSet('iterations'):
-        #     self.iterations = int(argParser.flagArgumentInt('iterations', 0))
-        # if argParser.isFlagSet('i'):
-        #     self.iterations = int(argParser.flagArgumentInt('i', 0))
-
         if argParser.isFlagSet('pinBorderVerts'):
             self.pinBorderVerts = argParser.flagArgumentBool('pinBorderVerts', 0)
         if argParser.isFlagSet('pin'):
@@ -217,7 +212,7 @@ class SmoothSkinWeights(om.MPxCommand):
 
         # for the starting weights, we need to get weights on every vertex so we have neighbors
         # originalWeights = fnSkinCluster.getWeights(self.dagPath, emptyComponent, influenceIndices)
-        # make the original weights just hte selected components and its neighbor weights
+        # make the original weights just the selected components and its neighbor weights
         originalWeights = fnSkinCluster.getWeights(self.dagPath, self.selectedComponentsWithNeighbors, influenceIndices)
         oldWeights = om.MDoubleArray(originalWeights)
 
