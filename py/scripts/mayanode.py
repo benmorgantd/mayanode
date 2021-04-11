@@ -45,7 +45,7 @@ class Scene(object):
     @classmethod
     def stringToMObject(cls, sourceString):
         _mObject = None
-        if isinstance(sourceString, basestring):
+        if isinstance(sourceString, str):
             try:
                 # we only want to deal in objects that have unique names
                 _sel = om.MSelectionList()
@@ -116,11 +116,12 @@ class Scene(object):
             if _shapeMObj.hasFn(om.MFn.kMesh):
                 _mesh = Mesh(_shapeMObj)
                 if not _mesh.fnDagNode.isIntermediateObject:
-                    vertexConversion.update(xrange(_mesh.fnMesh.numVertices))
+                    vertexConversion.update(range(_mesh.fnMesh.numVertices))
             else:
                 return
 
         newSel = om.MSelectionList()
+
         for vertId in vertexConversion:
             newSel.add(dag.fullPathName() + '.vtx[{0}]'.format(vertId))
 
@@ -192,12 +193,18 @@ class Scene(object):
     def mayaVersion(cls):
         return om.MGlobal.mayaVersion()
 
+    @classmethod
+    def componentMObjectToIntArray(cls, component):
+        '''Returns an MIntArray'''
+
+        return om.MFnSingleIndexedComponent(component).getElements()
+
 
 class DependencyNode(object):
     @classmethod
     def stringToMObject(cls, sourceString):
         _mObject = None
-        if isinstance(sourceString, basestring):
+        if isinstance(sourceString, str):
             try:
                 # we only want to deal in objects that have unique names
                 _sel = om.MSelectionList()
@@ -238,7 +245,7 @@ class DependencyNode(object):
             if seed.isNull():
                 raise ValueError('Cannot initialize {} as the given MObject is null.'.format(seed))
             self.mObject = om.MObject(seed)
-        elif isinstance(seed, basestring):
+        elif isinstance(seed, str):
             self.mObject = self.stringToMObject(seed)
         else:
             raise RuntimeError(
@@ -341,13 +348,13 @@ class DependencyNode(object):
                     raise AttributeError('The given MFnNumericData type {0} is not supported.'.format(unitType))
             elif plugType == om.MFn.kAttribute3Double:
                 _result = []
-                for i in xrange(plug.numChildren()):
+                for i in range(plug.numChildren()):
                     _childPlug = plug.child(i)
                     _result.append(_childPlug.asDouble())
                 return _result
             elif plugType == om.MFn.kAttribute3Float:
                 _result = []
-                for i in xrange(plug.numChildren()):
+                for i in range(plug.numChildren()):
                     _childPlug = plug.child(i)
                     _result.append(_childPlug.asFloat())
                 return _result
@@ -421,7 +428,7 @@ class DependencyNode(object):
                     _eulerRot = value.asEulerRotation()
                     _eulerRot = _eulerRot.reorder(ROTATE_ORDERS[self.get('rotateOrder')])
                     value = _eulerRot
-                for i in xrange(plug.numChildren()):
+                for i in range(plug.numChildren()):
                     _childPlug = plug.child(i)
                     cmds.setMayanodeAttr(_childPlug, float=value[i])
 
@@ -619,7 +626,7 @@ class DagNode(DependencyNode):
             newParent = NULL_OBJECT
         elif isinstance(newParent, DependencyNode):
             newParent = newParent.mObject
-        elif isinstance(newParent, basestring):
+        elif isinstance(newParent, str):
             newParent = Scene.stringToMObject(newParent)
 
         dagMod = om.MDagModifier()
@@ -649,7 +656,7 @@ class DagNode(DependencyNode):
             _itDag.next()
 
         _result = []
-        for i in xrange(len(_mObjArray)):
+        for i in range(len(_mObjArray)):
             # TODO: put this in Transform? ...
             _result.append(DagNode(_mObjArray[i]))
         return _result
@@ -675,7 +682,7 @@ class DagNode(DependencyNode):
             _itDag.next()
 
         _result = []
-        for i in xrange(len(_mObjArray)):
+        for i in range(len(_mObjArray)):
             # TODO: put this in Transform?
             _result.append(DagNode(_mObjArray[i]))
         return _result
@@ -702,7 +709,7 @@ class DagNode(DependencyNode):
     def hasParent(self, parent):
         if isinstance(parent, DependencyNode):
             parent = parent.mObject
-        elif isinstance(parent, basestring):
+        elif isinstance(parent, str):
             parent = self.stringToMObject(parent)
 
         if parent:
@@ -713,7 +720,7 @@ class DagNode(DependencyNode):
     def hasChild(self, child):
         if isinstance(child, DependencyNode):
             child = child.mObject
-        elif isinstance(child, basestring):
+        elif isinstance(child, str):
             child = self.stringToMObject(child)
 
         if child:
@@ -730,7 +737,7 @@ class Transform(DagNode):
 
         matrixList = []
 
-        for i in xrange(16):
+        for i in range(16):
             matrixList.append(matrix[i])
 
         return matrixList
@@ -1112,7 +1119,7 @@ class Mesh(Shape):
         else:
             # We'll have to do more work if the object has a mixture of smooth and hard shaded edges
             faceVertexNormals = []
-            for i in xrange(len(faceIds)):
+            for i in range(len(faceIds)):
                 faceVertexNormals.append(normals[vertexIds[i]])
 
             fnMesh.setFaceVertexNormals(faceVertexNormals, faceIds, vertexIds)
@@ -1192,7 +1199,7 @@ class Mesh(Shape):
 
             closestPointVector = om.MVector(closestPoint.x, closestPoint.y, closestPoint.z)
 
-            for i in xrange(numFaceVertices):
+            for i in range(numFaceVertices):
                 # mesh-relative face id
                 faceVertexId = faceVertexIds[i]
                 faceVertexPosition = ownMeshVertexPositions[faceVertexId]
@@ -1251,7 +1258,7 @@ class Mesh(Shape):
                 faceVertexIndices = targetFnMesh.getPolygonVertices(closestFaceIndex)
                 numFaceVertices = len(faceVertexIndices)
 
-                for i in xrange(numFaceVertices):
+                for i in range(numFaceVertices):
                     # average the face's normals
                     normalSum += targetMeshNormals[faceVertexIndices[i]]
 
@@ -1373,10 +1380,10 @@ class Curve(DagNode):
         _numCVs = self.fnNurbsCurve.numCVs
 
         if isinstance(points, list):
-            for i in xrange(len(points)):
+            for i in range(len(points)):
                 _points.append(om.MPoint(*points[i]))
             _lastPoint = _points[len(points) - 1]
-            for j in xrange(len(points), cvLimit):
+            for j in range(len(points), cvLimit):
                 _points.append(om.MPoint(_lastPoint))
 
         elif isinstance(points, om.MPointArray):
@@ -1412,14 +1419,14 @@ class LinearCurve(Curve):
         _knots = om.MDoubleArray()
 
         if not isinstance(points, om.MPointArray):
-            for i in xrange(len(points)):
+            for i in range(len(points)):
                 _points.append(om.MPoint(*points[i]))
                 _knots.append(i)
 
             if forceCvCount:
                 # Force the cv count to be the same on rig control curves so their shape can be easily changed
                 _lastPoint = _points[len(_points) - 1]
-                for j in xrange(len(points), forceCvCount):
+                for j in range(len(points), forceCvCount):
                     # make all the remaining CVs equal to the same as the last point
                     _points.append(om.MPoint(_lastPoint))
                     _knots.append(j)
@@ -1459,27 +1466,32 @@ class SkinCluster(DependencyNode):
         super(SkinCluster, self).__init__(seed)
 
     @classmethod
+    def normalizeVertexWeightList(cls, weights):
+        '''Normalizes the weights of a single vertex so that the sum of its influences adds to 1.0'''
+
+        weightSum = sum(weights)
+        normalizedWeights = [value / weightSum for value in weights]
+        return normalizedWeights
+
+    @classmethod
     def pruneVertexWeightList(cls, weights, influenceCount, maxInfluence=4, normalize=True):
         """Prunes the given list to have only four non-zero values"""
 
-        sortedWeights = weights
-        sortedWeights.sort(reverse=True)
+        weightIndices = range(influenceCount)
+        weightToIndexMap = zip(weights, weightIndices)
+
+        sortedWeights = sorted(weightToIndexMap, key=lambda t: t[0], reverse=True)
         prunedWeights = [0.0] * influenceCount
 
-        if maxInfluence > 1:
-            for i in xrange(influenceCount):
-                if i > (maxInfluence - 1):
-                    prunedWeights[weights.index(sortedWeights[i])] = 0.0
-                else:
-                    prunedWeights[weights.index(sortedWeights[i])] = sortedWeights[i]
-        else:
-            prunedWeights[weights.index(sortedWeights[0])] = sortedWeights[0]
+        # for i in range(maxInfluence):
+        #     if i > (maxInfluence - 1):
+        #         prunedWeights[weightToIndexMap[]] = 0.0
 
+        raise RuntimeError
         if normalize:
-            prunedWeightsSum = sum(prunedWeights)
-            prunedWeights = [value / prunedWeightsSum for value in prunedWeights]
-
-        return prunedWeights
+            return cls.normalizeVertexWeightList(prunedWeights)
+        else:
+            return prunedWeights
 
     @property
     def fnSkinCluster(self):
@@ -1513,7 +1525,7 @@ class SkinCluster(DependencyNode):
     def influenceIndices(self):
         _influenceIndices = om.MIntArray()
         # create an MIntArray that just counts from 0 to infCount
-        for i in xrange(self.influenceCount):
+        for i in range(self.influenceCount):
             _influenceIndices.append(i)
 
         return _influenceIndices
@@ -1546,7 +1558,7 @@ class SkinCluster(DependencyNode):
 
         numInfluences = self.influenceCount
 
-        for i in xrange(numInfluences):
+        for i in range(numInfluences):
             # A single influence's weights is its column of the weight matrix
             weightDict[_influenceObjects[i].partialPathName()] = _weights[i:: numInfluences]
 
@@ -1554,59 +1566,65 @@ class SkinCluster(DependencyNode):
 
     def setWeights(self, newWeights, components=None):
         if not components:
-            components = NULL_OBJECT
+            componentArray = []
         else:
             assert isinstance(components, om.MObject)
+            componentIntArray = Scene.componentMObjectToIntArray(components)
+            componentArray = list(componentIntArray)
 
-        if not isinstance(newWeights, om.MDoubleArray):
-            if isinstance(newWeights, list):
-                _temp = om.MDoubleArray()
-                for w in newWeights:
-                    _temp.append(w)
+        if not isinstance(newWeights, list):
+            if isinstance(newWeights, om.MDoubleArray):
+                _temp = []
+                for w in range(len(newWeights)):
+                    _temp.append(newWeights[w])
                 newWeights = _temp
             else:
                 raise ValueError('newWeights must be a DoubleArray or list')
 
-        self.fnSkinCluster.setWeights(self.outputGeometry.dagPath, components, self.influenceIndices, newWeights)
+        # string args to commands must be resolved before using them as an argument
+        shapeName = str(self.outputGeometry.dagPath.fullPathName())
+        skinClusterName = str(self.name)
+
+        cmds.SetSkinWeights(shapeName, skinClusterName, weights=newWeights, vertices=componentArray)
+        # self.fnSkinCluster.setWeights(self.outputGeometry.dagPath, components, self.influenceIndices, newWeights)
 
     def pruneWeights(self, maxInfluence=4):
         """Sets the weights for each vertex to the average of its neighbors."""
 
         originalSel = om.MGlobal.getActiveSelectionList()
 
-        if not len(originalSel):
+        if not originalSel.length():
             cmds.select(self.outputGeometry.dagPath.fullPathName())
 
         _dag, selectedComponents = Scene.getSelectedVertexIDs()
+        selectedVertexIds = Scene.componentMObjectToIntArray(selectedComponents)
 
         oldWeights = self.getWeights(components=selectedComponents)
 
         # newWeights just starts as a copy of oldWeights
-        newWeights = om.MDoubleArray(oldWeights)
+        newWeights = list(om.MDoubleArray(oldWeights))
+        infCount = self.influenceCount
+        numOverInfluenced = 0
 
         # iterate over the selected verts
-        itVerts = om.MItMeshVertex(_dag, selectedComponents)
-        i = 0
-        numOverInfluenced = 0
-        infCount = self.influenceCount
-
-        while not itVerts.isDone():
-            vertWeightSliceStart = i * infCount
-            vertWeights = list(newWeights[vertWeightSliceStart: vertWeightSliceStart + infCount])
-            # Filter is nearly instant.
-            nonZeroCount = len(filter(lambda w: w > 0.0, vertWeights))
+        for v in range(len(selectedVertexIds)):
+            sliceStart = v * infCount
+            vertexWeight = newWeights[sliceStart: sliceStart + infCount]
+            print(vertexWeight)
+            nonZeroCount = len(filter(lambda w: w > 0.0, vertexWeight))
 
             if nonZeroCount > maxInfluence:
                 numOverInfluenced += 1
                 # makes the weights for the closest vertex equal to the outer vertex
-                newWeights[vertWeightSliceStart: vertWeightSliceStart + infCount] = self.pruneVertexWeightList(
-                    vertWeights, influenceCount=infCount, maxInfluence=maxInfluence)
-
-            i += 1
-            itVerts.next()
+                prunedWeight = self.pruneVertexWeightList(vertexWeight,
+                                                                                           influenceCount=infCount,
+                                                                                           maxInfluence=maxInfluence)
+                print(prunedWeight)
+                newWeights[sliceStart: sliceStart + infCount] = prunedWeight
 
         if numOverInfluenced:
-            self.setWeights(newWeights, components=selectedComponents)
+            pass
+            # self.setWeights(newWeights, components=selectedComponents)
 
         om.MGlobal.setActiveSelectionList(originalSel)
 
@@ -1648,11 +1666,11 @@ class SkinCluster(DependencyNode):
                 neighborWeightSums = [0.0] * numInfluences
                 numNeighbors = len(neighborVerts)
 
-                for i in xrange(numNeighbors):
+                for i in range(numNeighbors):
                     neighborVertexIndex = neighborVerts[i]
                     neighborWeightIndex = vertIdToWeightListIndexMap[neighborVertexIndex]
                     # get these vertex's weights and add them to our weight sums
-                    for j in xrange(numInfluences):
+                    for j in range(numInfluences):
                         neighborWeightSums[j] += oldWeights[(neighborWeightIndex * numInfluences) + j]
 
                 smoothedWeight = [w / float(numNeighbors) for w in neighborWeightSums]
@@ -1666,6 +1684,20 @@ class SkinCluster(DependencyNode):
                 itVerts.next()
 
         self.setWeights(newWeights, components=selectedComponents)
+
+    def normalizeWeights(self):
+        oldWeights = self.getWeights()
+        oldWeightList = list(oldWeights)
+
+        normalizedWeights = []
+        _influenceCount = self.influenceCount
+        _vertexCount = int(len(oldWeights) / float(_influenceCount))
+
+        for v in range(_vertexCount):
+            vertexWeight = oldWeightList[(v*_influenceCount) : (v*_influenceCount) + _influenceCount]
+            normalizedWeights += self.normalizeVertexWeightList(vertexWeight)
+
+        self.setWeights(normalizedWeights)
 
 
 class ShaderGroup(DependencyNode):
@@ -1854,3 +1886,5 @@ class ParentConstraint(Constraint):
 
         # TODO: return type... return only one pick matrix node for all children?
         return pickMatrix
+
+

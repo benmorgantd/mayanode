@@ -122,7 +122,7 @@ class SmoothSkinWeights(om.MPxCommand):
                 meshMFnDagNode = om.MFnDagNode(_shapeMObj)
                 meshMFn = om.MFnMesh(_shapeMObj)
                 if not meshMFnDagNode.isIntermediateObject:
-                    vertexConversion.update(xrange(meshMFn.numVertices))
+                    vertexConversion.update(range(meshMFn.numVertices))
             else:
                 return
 
@@ -207,7 +207,7 @@ class SmoothSkinWeights(om.MPxCommand):
 
         numInfluences = len(fnSkinCluster.influenceObjects())
         influenceIndices = om.MIntArray()
-        for influence in xrange(numInfluences):
+        for influence in range(numInfluences):
             influenceIndices.append(influence)
 
         # for the starting weights, we need to get weights on every vertex so we have neighbors
@@ -246,17 +246,17 @@ class SmoothSkinWeights(om.MPxCommand):
                 numNeighbors = len(neighborVerts)
                 # When trying to smooth weights on just a subset of vertices, we need a way to
                 # match a vertex's neighbor vert id to that neighbor vertex's weight list index.
-                for i in xrange(numNeighbors):
+                for i in range(numNeighbors):
                     neighborVertexIndex = neighborVerts[i]
                     neighborWeightIndex = vertIdToWeightListIndexMap[neighborVertexIndex]
                     # get these vertex's weights and add them to our weight sums
-                    for j in xrange(numInfluences):
+                    for j in range(numInfluences):
                         neighborWeightSums[j] += oldWeights[(neighborWeightIndex * numInfluences) + j]
 
                 smoothedWeights = [w / float(numNeighbors) for w in neighborWeightSums]
                 strengthWeightedWeights = []
 
-                for weightIndex in xrange(len(smoothedWeights)):
+                for weightIndex in range(len(smoothedWeights)):
                     smoothedWeight = smoothedWeights[weightIndex]
                     oldWeight = oldWeights[weightIndex]
                     strengthWeightedWeights.append(oldWeight + (self.strength * (smoothedWeight - oldWeight)))
@@ -271,7 +271,7 @@ class SmoothSkinWeights(om.MPxCommand):
                 itVerts.next()
 
         newWeightsDoubleArray = om.MDoubleArray()
-        for weightIndex in xrange(len(newWeights)):
+        for weightIndex in range(len(newWeights)):
             # make the final value weighted
             newWeightsDoubleArray.append(newWeights[weightIndex])
 
